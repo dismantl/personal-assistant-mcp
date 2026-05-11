@@ -1,14 +1,27 @@
 """FastMCP server for personal-assistant tasks.
 
-Phase 1 scaffold: only the `health` tool is registered. Business logic lands
-in subsequent phases. Transport mirrors obsidian-livesync-mcp: stdio by default,
-streamable-http with optional static Bearer auth when MCP_TRANSPORT is set.
+Transport mirrors obsidian-livesync-mcp: stdio by default, streamable-http
+with optional static Bearer auth when ``MCP_TRANSPORT=streamable-http``.
+
+The vault client is constructed lazily on the first tool that needs it and
+closed cleanly on server shutdown via the FastMCP lifespan hook.
 """
+
+from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
+
+from .config import Settings
+from .tasks import tools as tasks_tools
+from .vault import build_vault_client
+
+if TYPE_CHECKING:
+    from obsidian_livesync_mcp.client import ObsidianVaultClient
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +63,35 @@ if _transport == "streamable-http":
             required_scopes=[],
         )
 
+
+_vault: ObsidianVaultClient | None = None
+
+
+def _get_vault() -> ObsidianVaultClient:
+    """Return the shared vault client, constructing it on first call."""
+    global _vault
+    if _vault is None:
+        _vault = build_vault_client(Settings.from_env())
+    return _vault
+
+
+@asynccontextmanager
+async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
+    """Close the vault client on shutdown if it was constructed."""
+    global _vault
+    try:
+        yield
+    finally:
+        if _vault is not None:
+            try:
+                await _vault.close()
+            except Exception:
+                logger.exception("Error closing vault client")
+            _vault = None
+
+
+_server_kwargs["lifespan"] = _lifespan
+
 mcp = FastMCP("personal-assistant", **_server_kwargs)
 
 
@@ -61,6 +103,9 @@ async def health() -> dict:
         "service": "personal-assistant-mcp",
         "transport": _transport,
     }
+
+
+tasks_tools.register(mcp, _get_vault)
 
 
 def main() -> None:
