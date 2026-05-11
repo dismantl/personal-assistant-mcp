@@ -94,8 +94,9 @@ async def migrate_from_local_file(
 
     validate_entries(data)
 
-    existing = await read_state(vault)
-    if existing:
+    # File-existence check (not content-truthy) — an empty ``{}`` state file
+    # still represents a prior migration and must not be silently clobbered.
+    if await vault.read_note(STATE_PATH) is not None:
         raise RuntimeError(
             f"Vault state already exists at {STATE_PATH!r} (refusing to overwrite). "
             "Manually inspect and clear if intentional."

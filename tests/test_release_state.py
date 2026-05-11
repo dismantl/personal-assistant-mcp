@@ -158,6 +158,19 @@ async def test_migrate_refuses_when_vault_state_exists(
         await migrate_from_local_file(fake_vault, source)
 
 
+async def test_migrate_refuses_when_empty_state_file_exists(
+    fake_vault: FakeVaultClient, tmp_path: Path
+) -> None:
+    """An empty-dict ({}) state file still represents a prior migration."""
+    fake_vault.notes[STATE_PATH] = "{}"
+    source = tmp_path / "release-state.json"
+    source.write_text(json.dumps({"foo": {"canonical_project_key": "foo"}}))
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        await migrate_from_local_file(fake_vault, source)
+    # The empty-state file must not have been overwritten
+    assert fake_vault.notes[STATE_PATH] == "{}"
+
+
 async def test_migrate_rejects_missing_source_file(
     fake_vault: FakeVaultClient, tmp_path: Path
 ) -> None:

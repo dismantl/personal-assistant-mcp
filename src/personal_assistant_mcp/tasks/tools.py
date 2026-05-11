@@ -32,6 +32,13 @@ def _parse_date(value: str | None, field_name: str) -> date | None:
 
 
 def _serialize_task_ref(ref: TaskRef) -> dict[str, Any]:
+    """Serialize a TaskRef for the MCP wire.
+
+    ``line_number`` is intentionally omitted — it's an artifact of parsing,
+    not a stable identifier, and inconsistent across tools (set by mutations
+    that look up by content, ``None`` on freshly-created tasks). The stable
+    identifier is ``id`` (the content hash).
+    """
     t = ref.task
     return {
         "id": ref.id,
@@ -48,7 +55,6 @@ def _serialize_task_ref(ref: TaskRef) -> dict[str, Any]:
         "cancelled_date": (t.cancelled_date.isoformat() if t.cancelled_date else None),
         "recurrence": t.recurrence,
         "tags": list(t.tags),
-        "line_number": t.line_number,
         "is_complete": t.is_complete,
         "is_cancelled": t.is_cancelled,
     }
