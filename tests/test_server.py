@@ -53,5 +53,18 @@ async def test_task_tools_registered() -> None:
         "calendar_week",
         "release_state_read",
         "release_state_update",
+        "email_primary_unread",
+        "email_primary_recent",
+        "email_primary_folders",
+        "email_primary_read",
+        "email_ai_unread",
+        "email_ai_recent",
+        "email_ai_folders",
+        "email_ai_read",
+        "email_ai_send",
+        "email_ai_archive",
+        "email_ai_delete",
+        "email_unsubscribe_check",
+        "email_unsubscribe_url",
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"

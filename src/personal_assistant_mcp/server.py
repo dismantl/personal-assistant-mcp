@@ -21,6 +21,7 @@ from .config import Settings
 from .daily import tools as daily_tools
 from .digests import tools as digests_tools
 from .freshrss import tools as freshrss_tools
+from .proton import tools as proton_tools
 from .release import tools as release_tools
 from .tasks import tools as tasks_tools
 from .vault import build_vault_client
@@ -118,6 +119,7 @@ digests_tools.register(mcp, _get_vault)
 release_tools.register(mcp, _get_vault)
 freshrss_tools.register(mcp)
 calendar_tools.register(mcp)
+proton_tools.register(mcp)
 
 
 def main() -> None:
