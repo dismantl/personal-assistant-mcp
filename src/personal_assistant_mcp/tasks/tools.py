@@ -18,8 +18,8 @@ from typing import Any
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
 from . import crud
-from .crud import MutationResult, TaskRef
-from .paths import normalize_vault_path
+from .crud import MoveResult, MutationResult, TaskRef
+from .paths import normalize_vault_path, resolve_move_destination
 
 
 def _parse_date(value: str | None, field_name: str) -> date | None:
@@ -57,6 +57,16 @@ def _serialize_task_ref(ref: TaskRef) -> dict[str, Any]:
 def _serialize_mutation(result: MutationResult) -> dict[str, Any]:
     out = _serialize_task_ref(result.ref)
     out["multiple_matches_in_file"] = result.multiple_matches_in_file
+    return out
+
+
+def _serialize_move(result: MoveResult) -> dict[str, Any]:
+    out = _serialize_task_ref(result.ref)
+    out["source_path"] = result.source_path
+    out["dest_path"] = result.dest_path
+    out["appended_to_dest"] = result.appended_to_dest
+    out["removed_from_source"] = result.removed_from_source
+    out["multiple_matches_in_source"] = result.multiple_matches_in_source
     return out
 
 
@@ -193,6 +203,30 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         path = normalize_vault_path(file_path)
         result = await crud.delete_task(get_vault(), path, task_id=task_id, body=body)
         return _serialize_mutation(result)
+
+    @mcp.tool()
+    async def tasks_move(
+        source_path: str,
+        dest_path: str,
+        task_id: str | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a task between files. Best-effort idempotent by content match.
+
+        Args:
+            source_path: vault path of the file the task currently lives in.
+            dest_path: vault path or Project/Area folder. If a folder under
+                ``1 Projects/`` or ``2 Areas/``, resolves to ``<folder>/todo.md``
+                (creating the file if missing).
+            task_id: optional content-hash from ``tasks_list``.
+            body: alternative identity — exact task body text.
+
+        Raises ``TaskMoveConflict`` if source changes during the move.
+        """
+        source = normalize_vault_path(source_path)
+        dest = resolve_move_destination(dest_path)
+        result = await crud.move_task(get_vault(), source, dest, task_id=task_id, body=body)
+        return _serialize_move(result)
 
 
 __all__ = ["register"]

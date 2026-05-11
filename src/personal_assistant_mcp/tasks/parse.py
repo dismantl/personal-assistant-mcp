@@ -38,11 +38,16 @@ RECURRENCE_EMOJI = "\U0001f501"  # 🔁
 
 _ALL_META_EMOJI = PRIORITY_EMOJI_STR + DATE_EMOJI_STR + RECURRENCE_EMOJI
 
+# Characters that terminate the recurrence rule body. Recurrence is free-form,
+# but must not consume tags (``#word``) that appear after it on the same line.
+_RECUR_TERMINATORS = _ALL_META_EMOJI + "#"
+
 _LINE_RE = re.compile(r"^(?P<indent>\s*)(?P<bullet>[-*+]) \[(?P<status>.)\] (?P<body>.*)$")
 _PRIORITY_RE = re.compile(f"[{PRIORITY_EMOJI_STR}]")
 _DATE_RE = re.compile(rf"(?P<emoji>[{DATE_EMOJI_STR}])\s*(?P<date>\d{{4}}-\d{{2}}-\d{{2}})")
 _RECUR_RE = re.compile(
-    rf"{RECURRENCE_EMOJI}\s*(?P<recur>[^{_ALL_META_EMOJI}]+?)(?=\s*[{_ALL_META_EMOJI}]|\s*$)"
+    rf"{RECURRENCE_EMOJI}\s*(?P<recur>[^{_RECUR_TERMINATORS}]+?)"
+    rf"(?=\s*[{_RECUR_TERMINATORS}]|\s*$)"
 )
 
 

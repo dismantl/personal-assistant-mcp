@@ -9,6 +9,7 @@ import pytest
 from personal_assistant_mcp.tasks.paths import (
     DAILY_NOTES_DIR,
     normalize_vault_path,
+    resolve_move_destination,
     today_in_vault_tz,
 )
 
@@ -105,3 +106,34 @@ def test_normalize_preserves_unicode_path_segments() -> None:
 def test_normalize_does_not_add_md_extension() -> None:
     """The function does not auto-add .md — callers are responsible for the extension."""
     assert normalize_vault_path("1 Projects/x/todo", today=_FIXED_TODAY) == "1 Projects/x/todo"
+
+
+# -----------------------------------------------------------------------------
+# resolve_move_destination
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Project/Area folders -> <folder>/todo.md
+        ("1 Projects/personal-assistant-mcp", "1 Projects/personal-assistant-mcp/todo.md"),
+        ("2 Areas/health", "2 Areas/health/todo.md"),
+        ("1 Projects/x/", "1 Projects/x/todo.md"),  # trailing slash collapsed first
+        # Already-pointing-at-a-file paths pass through
+        ("1 Projects/x/todo.md", "1 Projects/x/todo.md"),
+        ("1 Projects/x/notes.md", "1 Projects/x/notes.md"),
+        ("0 Logs/2026-05-11.md", "0 Logs/2026-05-11.md"),
+        # 'today' resolution still kicks in
+        ("today", f"{DAILY_NOTES_DIR}/2026-05-11.md"),
+        # Non-Project/Area folder without .md: returned as-is (caller error if intent unclear)
+        ("3 Resources/digests", "3 Resources/digests"),
+    ],
+)
+def test_resolve_move_destination(raw: str, expected: str) -> None:
+    assert resolve_move_destination(raw, today=_FIXED_TODAY) == expected
+
+
+def test_resolve_move_destination_rejects_traversal() -> None:
+    with pytest.raises(ValueError, match="traversal"):
+        resolve_move_destination("../outside", today=_FIXED_TODAY)

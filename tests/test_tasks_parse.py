@@ -197,6 +197,15 @@ def test_recurrence_with_priority_after() -> None:
     assert task.priority == "🔼"
 
 
+def test_recurrence_terminates_at_tag() -> None:
+    """Recurrence rule must stop at a ``#tag`` boundary, not swallow the tag."""
+    task = parse_task("- [ ] task 🔁 every Monday #work")
+    assert task is not None
+    assert task.recurrence == "every Monday"
+    assert task.body == "task #work"
+    assert task.tags == ("#work",)
+
+
 # -----------------------------------------------------------------------------
 # Tags (stay in body, surfaced via property)
 # -----------------------------------------------------------------------------

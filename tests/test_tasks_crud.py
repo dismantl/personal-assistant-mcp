@@ -8,12 +8,15 @@ import pytest
 
 from personal_assistant_mcp.tasks import Task
 from personal_assistant_mcp.tasks.crud import (
+    MoveResult,
     MutationResult,
+    TaskMoveConflict,
     TaskRef,
     add_task,
     complete_task,
     delete_task,
     list_tasks,
+    move_task,
     read_tasks,
     search_tasks,
     uncomplete_task,
@@ -413,3 +416,190 @@ def test_taskref_id_is_content_hash() -> None:
     task = Task(body="hello")
     ref = TaskRef("0 Logs/today.md", task)
     assert ref.id == task.content_hash("0 Logs/today.md")
+
+
+# -----------------------------------------------------------------------------
+# move_task
+# -----------------------------------------------------------------------------
+
+
+async def test_move_task_happy_path(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] buy milk \U0001f53c\n"
+    fake_vault.notes["1 Projects/grocery/todo.md"] = ""
+    result = await move_task(
+        fake_vault,
+        "0 Logs/2026-05-11.md",
+        "1 Projects/grocery/todo.md",
+        body="buy milk",
+    )
+    assert isinstance(result, MoveResult)
+    assert result.appended_to_dest is True
+    assert result.removed_from_source is True
+    assert result.multiple_matches_in_source is False
+    assert result.ref.file_path == "1 Projects/grocery/todo.md"
+    assert result.ref.task.body == "buy milk"
+    assert result.ref.task.priority_bucket == "medium"
+    # Source: line removed; dest: line appended (priority preserved)
+    assert fake_vault.notes["0 Logs/2026-05-11.md"] == ""
+    assert fake_vault.notes["1 Projects/grocery/todo.md"] == "- [ ] buy milk \U0001f53c\n"
+
+
+async def test_move_task_creates_destination_file_if_missing(
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] task\n"
+    result = await move_task(
+        fake_vault,
+        "0 Logs/2026-05-11.md",
+        "1 Projects/new/todo.md",
+        body="task",
+    )
+    assert result.appended_to_dest is True
+    assert fake_vault.notes["1 Projects/new/todo.md"] == "- [ ] task\n"
+
+
+async def test_move_task_idempotent_when_already_in_dest(
+    fake_vault: FakeVaultClient,
+) -> None:
+    """Same task body already in dest: no-op append, but still remove from source."""
+    fake_vault.notes["src.md"] = "- [ ] alpha\n- [ ] beta\n"
+    fake_vault.notes["dst.md"] = "- [ ] alpha\n"
+    result = await move_task(fake_vault, "src.md", "dst.md", body="alpha")
+    assert result.appended_to_dest is False
+    assert result.removed_from_source is True
+    assert fake_vault.notes["src.md"] == "- [ ] beta\n"
+    assert fake_vault.notes["dst.md"] == "- [ ] alpha\n"
+
+
+async def test_move_task_retry_safety(fake_vault: FakeVaultClient) -> None:
+    """Simulates a crash between append-to-dest and remove-from-source.
+
+    The first call's dest-write succeeded, source-write didn't happen. A retry
+    sees the task already in dest, skips the append, and proceeds with the
+    source removal. End-state: task in dest, not in source — never duplicated.
+    """
+    # Simulated post-crash state
+    fake_vault.notes["src.md"] = "- [ ] alpha\n"
+    fake_vault.notes["dst.md"] = "- [ ] alpha\n"  # append already happened pre-crash
+    result = await move_task(fake_vault, "src.md", "dst.md", body="alpha")
+    assert result.appended_to_dest is False  # dedup detected
+    assert result.removed_from_source is True
+    assert fake_vault.notes["src.md"] == ""
+    assert fake_vault.notes["dst.md"] == "- [ ] alpha\n"
+
+
+async def test_move_task_multiple_matches_in_source(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes["src.md"] = "- [ ] dup\n- [ ] dup\n"
+    fake_vault.notes["dst.md"] = ""
+    result = await move_task(fake_vault, "src.md", "dst.md", body="dup")
+    assert result.multiple_matches_in_source is True
+    # First occurrence moved; second remains in source
+    assert fake_vault.notes["src.md"] == "- [ ] dup\n"
+    assert fake_vault.notes["dst.md"] == "- [ ] dup\n"
+
+
+async def test_move_task_preserves_all_metadata(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes["src.md"] = (
+        "- [ ] write spec \U0001f53c \U0001f6eb 2026-05-12 \U0001f4c5 2026-05-15 "
+        "\U0001f501 every Monday #work\n"
+    )
+    fake_vault.notes["dst.md"] = ""
+    result = await move_task(fake_vault, "src.md", "dst.md", body="write spec #work")
+    assert result.ref.task.priority_bucket == "medium"
+    assert result.ref.task.start == date(2026, 5, 12)
+    assert result.ref.task.due == date(2026, 5, 15)
+    assert result.ref.task.recurrence == "every Monday"
+    assert "#work" in fake_vault.notes["dst.md"]
+
+
+async def test_move_task_raises_when_source_missing(fake_vault: FakeVaultClient) -> None:
+    with pytest.raises(FileNotFoundError):
+        await move_task(fake_vault, "ghost.md", "dst.md", body="x")
+
+
+async def test_move_task_raises_when_task_not_in_source(
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes["src.md"] = "- [ ] something else\n"
+    fake_vault.notes["dst.md"] = ""
+    with pytest.raises(LookupError):
+        await move_task(fake_vault, "src.md", "dst.md", body="not there")
+
+
+async def test_move_task_by_task_id(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] alpha\n- [ ] beta \U0001f53c\n"
+    fake_vault.notes["1 Projects/x/todo.md"] = ""
+    refs = await list_tasks(fake_vault)
+    beta = next(r for r in refs if r.task.body == "beta")
+    result = await move_task(
+        fake_vault,
+        beta.file_path,
+        "1 Projects/x/todo.md",
+        task_id=beta.id,
+    )
+    assert result.ref.task.body == "beta"
+    assert "beta" in fake_vault.notes["1 Projects/x/todo.md"]
+
+
+async def test_move_task_detects_concurrent_edit_and_rolls_back(
+    fake_vault: FakeVaultClient,
+) -> None:
+    """If source content changes between read and write, the move aborts and rollback runs."""
+    fake_vault.notes["src.md"] = "- [ ] move me\n"
+    fake_vault.notes["dst.md"] = ""
+
+    # Patch read_note to mutate source on the second call (the re-read step)
+    original_read = fake_vault.read_note
+    call_count = {"n": 0}
+
+    async def racing_read(path):
+        if path == "src.md":
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                # Simulate a concurrent edit between dest-append and source re-read
+                fake_vault.notes["src.md"] = "- [ ] move me (edited)\n"
+        return await original_read(path)
+
+    fake_vault.read_note = racing_read  # type: ignore[method-assign]
+
+    with pytest.raises(TaskMoveConflict) as excinfo:
+        await move_task(fake_vault, "src.md", "dst.md", body="move me")
+
+    assert excinfo.value.rollback_succeeded is True
+    # Dest is rolled back to pre-move state (empty)
+    assert fake_vault.notes["dst.md"] == ""
+    # Source retains the (concurrently-edited) new content
+    assert fake_vault.notes["src.md"] == "- [ ] move me (edited)\n"
+
+
+async def test_move_task_no_rollback_when_dest_already_had_task(
+    fake_vault: FakeVaultClient,
+) -> None:
+    """When append was a no-op (dedup), a concurrent-edit conflict has nothing to roll back."""
+    fake_vault.notes["src.md"] = "- [ ] alpha\n"
+    fake_vault.notes["dst.md"] = "- [ ] alpha\n"
+
+    original_read = fake_vault.read_note
+    call_count = {"n": 0}
+
+    async def racing_read(path):
+        if path == "src.md":
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                fake_vault.notes["src.md"] = "- [ ] alpha edited\n"
+        return await original_read(path)
+
+    fake_vault.read_note = racing_read  # type: ignore[method-assign]
+
+    with pytest.raises(TaskMoveConflict) as excinfo:
+        await move_task(fake_vault, "src.md", "dst.md", body="alpha")
+
+    assert excinfo.value.rollback_succeeded is True
+    # Dest unchanged (no-op append meant nothing to roll back)
+    assert fake_vault.notes["dst.md"] == "- [ ] alpha\n"
+
+
+async def test_move_task_requires_identity(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes["src.md"] = "- [ ] alpha\n"
+    with pytest.raises(ValueError, match="task_id or body"):
+        await move_task(fake_vault, "src.md", "dst.md")

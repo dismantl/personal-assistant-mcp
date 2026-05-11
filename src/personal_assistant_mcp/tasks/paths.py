@@ -16,6 +16,10 @@ from zoneinfo import ZoneInfo
 
 VAULT_TIMEZONE = ZoneInfo("America/New_York")
 DAILY_NOTES_DIR = "0 Logs"
+PROJECTS_DIR = "1 Projects"
+AREAS_DIR = "2 Areas"
+
+_TODO_FILENAME = "todo.md"
 
 
 def today_in_vault_tz() -> date:
@@ -72,3 +76,27 @@ def normalize_vault_path(raw: str, *, today: date | None = None) -> str:
         return f"{DAILY_NOTES_DIR}/{today_iso}.md"
 
     return p
+
+
+def resolve_move_destination(raw: str, *, today: date | None = None) -> str:
+    """Resolve a ``tasks.move`` destination per the Move-Task Templater convention.
+
+    If the (normalized) path is a folder under ``1 Projects/`` or ``2 Areas/``
+    and does not already end in ``.md``, append ``/todo.md``. Otherwise return
+    the normalized path unchanged.
+
+    Examples:
+        ``"1 Projects/personal-assistant-mcp"`` -> ``"1 Projects/personal-assistant-mcp/todo.md"``
+        ``"2 Areas/health/notes.md"``           -> ``"2 Areas/health/notes.md"``
+        ``"0 Logs/today"``                      -> ``"0 Logs/2026-05-11.md"``
+    """
+    normalized = normalize_vault_path(raw, today=today)
+    if normalized.endswith(".md"):
+        return normalized
+
+    project_prefix = PROJECTS_DIR + "/"
+    area_prefix = AREAS_DIR + "/"
+    if normalized.startswith(project_prefix) or normalized.startswith(area_prefix):
+        return f"{normalized}/{_TODO_FILENAME}"
+
+    return normalized

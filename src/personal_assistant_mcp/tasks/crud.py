@@ -50,6 +50,38 @@ class MutationResult:
     multiple_matches_in_file: bool = False
 
 
+@dataclass(frozen=True)
+class MoveResult:
+    """Result of a ``move_task`` call.
+
+    ``appended_to_dest`` is ``False`` when the destination already contained
+    a task with the same body — the move is a no-op append (source-delete
+    still happens). ``multiple_matches_in_source`` flags ambiguity when the
+    source file contains more than one task with the matched identity.
+    """
+
+    ref: TaskRef
+    source_path: str
+    dest_path: str
+    appended_to_dest: bool
+    removed_from_source: bool
+    multiple_matches_in_source: bool = False
+
+
+class TaskMoveConflict(Exception):
+    """Raised when source changes between the move's read and write phases.
+
+    If a concurrent edit is detected, the move is aborted and the destination
+    file is rolled back to its pre-move state when possible. The exception
+    carries ``rollback_succeeded`` so callers can decide whether the user
+    needs to manually clean up.
+    """
+
+    def __init__(self, message: str, *, rollback_succeeded: bool) -> None:
+        super().__init__(message)
+        self.rollback_succeeded = rollback_succeeded
+
+
 # -----------------------------------------------------------------------------
 # Read / list / search
 # -----------------------------------------------------------------------------
@@ -237,6 +269,83 @@ async def update_task(
     return await _apply_to_first_match(vault, file_path, transform, task_id=task_id, body=body)
 
 
+async def move_task(
+    vault: ObsidianVaultClient,
+    source_path: str,
+    dest_path: str,
+    *,
+    task_id: str | None = None,
+    body: str | None = None,
+) -> MoveResult:
+    """Move a task from ``source_path`` to ``dest_path``.
+
+    Algorithm (best-effort idempotent, dedup by body):
+
+    1. Read source; locate the task by ``task_id`` or ``body``.
+    2. Read destination; if any line in dest has the same task body,
+       treat the dest-append as a no-op.
+    3. Otherwise, append the task (with all metadata) to dest.
+    4. Re-read source; if its content has changed since step 1, abort
+       and roll back the dest-append (if performed). The caller sees
+       a :class:`TaskMoveConflict`.
+    5. Write source back with the matched line removed.
+
+    Retries after a crash between dest-write and source-write are safe:
+    the second attempt sees the task already in dest and skips the append,
+    then proceeds to remove the orphan in source.
+    """
+    # Step 1 — read source and find task
+    source_note = await vault.read_note(source_path)
+    if source_note is None:
+        raise FileNotFoundError(source_path)
+    source_lines = source_note.content.splitlines()
+    matches = _find_matching_tasks(source_lines, source_path, task_id=task_id, body=body)
+    if not matches:
+        raise LookupError(_no_match_error(task_id, body, source_path))
+    line_idx, task = matches[0]
+    multiple_matches = len(matches) > 1
+
+    # Step 2 — read destination and check for existing duplicate body
+    dest_note = await vault.read_note(dest_path)
+    dest_content = dest_note.content if dest_note is not None else ""
+    dest_lines = dest_content.splitlines()
+    task_already_in_dest = _has_task_with_body(dest_lines, task.body)
+
+    # Step 3 — append to dest if not already present
+    if not task_already_in_dest:
+        rendered = render_task(task)
+        new_dest_lines = dest_lines + [rendered]
+        await vault.write_note(dest_path, _rebuild(dest_content, new_dest_lines))
+
+    # Step 4 — optimistic concurrency check on source
+    fresh_source = await vault.read_note(source_path)
+    if fresh_source is None or fresh_source.content != source_note.content:
+        rollback_ok = True
+        if not task_already_in_dest:
+            try:
+                await vault.write_note(dest_path, dest_content)
+            except Exception:
+                rollback_ok = False
+        raise TaskMoveConflict(
+            f"Source {source_path!r} changed during move; "
+            f"dest {'rolled back' if rollback_ok else 'rollback FAILED'}.",
+            rollback_succeeded=rollback_ok,
+        )
+
+    # Step 5 — remove from source
+    new_source_lines = source_lines[:line_idx] + source_lines[line_idx + 1 :]
+    await vault.write_note(source_path, _rebuild(source_note.content, new_source_lines))
+
+    return MoveResult(
+        ref=TaskRef(dest_path, task),
+        source_path=source_path,
+        dest_path=dest_path,
+        appended_to_dest=not task_already_in_dest,
+        removed_from_source=True,
+        multiple_matches_in_source=multiple_matches,
+    )
+
+
 async def delete_task(
     vault: ObsidianVaultClient,
     file_path: str,
@@ -274,6 +383,16 @@ def _parse_lines(content: str) -> list[Task]:
         if task is not None:
             out.append(task)
     return out
+
+
+def _has_task_with_body(lines: list[str], target_body: str) -> bool:
+    """True iff any task line in ``lines`` has the same (trimmed) body."""
+    target = target_body.strip()
+    for line in lines:
+        t = parse_task(line)
+        if t is not None and t.body.strip() == target:
+            return True
+    return False
 
 
 def _find_matching_tasks(
@@ -335,12 +454,17 @@ async def _apply_to_first_match(
 
 
 def _rebuild(original: str, new_lines: list[str]) -> str:
+    """Join lines back into a single string with a trailing newline.
+
+    Empty ``new_lines`` returns ``""``. Otherwise the output always ends with
+    ``\\n`` — Obsidian's canonical file shape, and the only way to reliably
+    append to a previously-empty file without producing a missing-newline state.
+    The ``original`` arg is unused but kept for callers passing it explicitly.
+    """
+    del original  # currently unused; reserved for future newline-style preservation
     if not new_lines:
         return ""
-    text = "\n".join(new_lines)
-    if original.endswith("\n"):
-        text += "\n"
-    return text
+    return "\n".join(new_lines) + "\n"
 
 
 def _resolve_priority(value: str | None) -> str | None:
@@ -378,12 +502,15 @@ def _should_skip_path(path: str) -> bool:
 
 
 __all__ = [
+    "MoveResult",
     "MutationResult",
+    "TaskMoveConflict",
     "TaskRef",
     "add_task",
     "complete_task",
     "delete_task",
     "list_tasks",
+    "move_task",
     "read_tasks",
     "search_tasks",
     "uncomplete_task",

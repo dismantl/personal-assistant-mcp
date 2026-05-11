@@ -31,5 +31,6 @@ async def test_task_tools_registered() -> None:
         "tasks_uncomplete",
         "tasks_update",
         "tasks_delete",
+        "tasks_move",
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"
