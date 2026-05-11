@@ -603,3 +603,74 @@ async def test_move_task_requires_identity(fake_vault: FakeVaultClient) -> None:
     fake_vault.notes["src.md"] = "- [ ] alpha\n"
     with pytest.raises(ValueError, match="task_id or body"):
         await move_task(fake_vault, "src.md", "dst.md")
+
+
+async def test_move_task_rejects_same_source_and_dest(fake_vault: FakeVaultClient) -> None:
+    """Source==dest is a degenerate case; without a guard the task would be silently deleted."""
+    fake_vault.notes["x.md"] = "- [ ] task\n"
+    with pytest.raises(ValueError, match="must differ"):
+        await move_task(fake_vault, "x.md", "x.md", body="task")
+    assert fake_vault.notes["x.md"] == "- [ ] task\n"
+
+
+async def test_move_task_rollback_deletes_dest_when_it_did_not_exist(
+    fake_vault: FakeVaultClient,
+) -> None:
+    """Rollback after a concurrent edit must not leave a phantom empty dest file behind."""
+    fake_vault.notes["src.md"] = "- [ ] move me\n"
+    # Note: no "1 Projects/x/todo.md" entry — destination does not yet exist.
+
+    original_read = fake_vault.read_note
+    call_count = {"n": 0}
+
+    async def racing_read(path):
+        if path == "src.md":
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                fake_vault.notes["src.md"] = "- [ ] move me (edited)\n"
+        return await original_read(path)
+
+    fake_vault.read_note = racing_read  # type: ignore[method-assign]
+
+    with pytest.raises(TaskMoveConflict) as excinfo:
+        await move_task(fake_vault, "src.md", "1 Projects/x/todo.md", body="move me")
+
+    assert excinfo.value.rollback_succeeded is True
+    # Destination must NOT exist — rollback deleted the file we created in step 3.
+    assert "1 Projects/x/todo.md" not in fake_vault.notes
+
+
+async def test_move_task_rollback_failure_surfaces_in_exception(
+    fake_vault: FakeVaultClient,
+) -> None:
+    """If the rollback write itself fails, TaskMoveConflict.rollback_succeeded is False."""
+    fake_vault.notes["src.md"] = "- [ ] move me\n"
+    fake_vault.notes["dst.md"] = "- [ ] existing\n"
+
+    original_read = fake_vault.read_note
+    original_write = fake_vault.write_note
+    read_calls = {"n": 0}
+    write_calls = {"n": 0}
+
+    async def racing_read(path):
+        if path == "src.md":
+            read_calls["n"] += 1
+            if read_calls["n"] == 2:
+                fake_vault.notes["src.md"] = "- [ ] move me (edited)\n"
+        return await original_read(path)
+
+    async def failing_write(path, content):
+        write_calls["n"] += 1
+        # First write = dest append (step 3) — let it succeed.
+        # Second write = rollback restore — fail it.
+        if write_calls["n"] == 1:
+            return await original_write(path, content)
+        raise RuntimeError("simulated rollback failure")
+
+    fake_vault.read_note = racing_read  # type: ignore[method-assign]
+    fake_vault.write_note = failing_write  # type: ignore[method-assign]
+
+    with pytest.raises(TaskMoveConflict) as excinfo:
+        await move_task(fake_vault, "src.md", "dst.md", body="move me")
+
+    assert excinfo.value.rollback_succeeded is False

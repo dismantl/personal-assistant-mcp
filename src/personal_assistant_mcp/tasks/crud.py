@@ -293,7 +293,16 @@ async def move_task(
     Retries after a crash between dest-write and source-write are safe:
     the second attempt sees the task already in dest and skips the append,
     then proceeds to remove the orphan in source.
+
+    Raises ``ValueError`` if ``source_path == dest_path`` (use ``update_task``
+    to edit a task in place instead).
     """
+    if source_path == dest_path:
+        raise ValueError(
+            f"source_path and dest_path must differ (both = {source_path!r}); "
+            "use update_task to edit a task in place."
+        )
+
     # Step 1 — read source and find task
     source_note = await vault.read_note(source_path)
     if source_note is None:
@@ -307,7 +316,8 @@ async def move_task(
 
     # Step 2 — read destination and check for existing duplicate body
     dest_note = await vault.read_note(dest_path)
-    dest_content = dest_note.content if dest_note is not None else ""
+    dest_existed = dest_note is not None
+    dest_content = dest_note.content if dest_existed else ""
     dest_lines = dest_content.splitlines()
     task_already_in_dest = _has_task_with_body(dest_lines, task.body)
 
@@ -323,7 +333,12 @@ async def move_task(
         rollback_ok = True
         if not task_already_in_dest:
             try:
-                await vault.write_note(dest_path, dest_content)
+                if dest_existed:
+                    await vault.write_note(dest_path, dest_content)
+                else:
+                    # We created the dest file during step 3; remove it to leave
+                    # the vault in its pre-move "dest didn't exist" state.
+                    await vault.delete_note(dest_path)
             except Exception:
                 rollback_ok = False
         raise TaskMoveConflict(
