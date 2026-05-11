@@ -6,7 +6,7 @@ Companion to [obsidian-livesync-mcp](https://github.com/dismantl/obsidian-livesy
 
 ## Status
 
-Phase 1 — scaffold. Only the `health` tool is implemented. The full ~28-tool surface is added phase by phase per the spec.
+Server-code complete: 47 MCP tools across tasks/daily/weekly/digests/FreshRSS/CalDAV/release-state/Proton-email subsystems. ~6500 LOC, 323 tests. Deployment via Ansible (cutover from the legacy Hermes plugin) is the remaining work; see the spec in the user's vault.
 
 ## Quick start
 
@@ -38,7 +38,7 @@ ruff format --check src/ tests/
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `MCP_HOST` | `0.0.0.0` | HTTP bind (streamable-http only) |
 | `MCP_PORT` | `8080` | HTTP port (streamable-http only) |
-| `MCP_API_KEY` | (empty) | Bearer token; required for HTTP mode |
+| `MCP_API_KEY` | (none) | Bearer token; **required** for HTTP mode — server refuses to start without it |
 | `MCP_RESOURCE_URL` | `http://localhost:$MCP_PORT` | Auth issuer/resource URL |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 

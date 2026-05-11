@@ -1,7 +1,9 @@
 """FastMCP server for personal-assistant tasks.
 
-Transport mirrors obsidian-livesync-mcp: stdio by default, streamable-http
-with optional static Bearer auth when ``MCP_TRANSPORT=streamable-http``.
+Transport: stdio by default, or streamable-http when ``MCP_TRANSPORT=streamable-http``.
+In HTTP mode ``MCP_API_KEY`` is **required**; the server refuses to start an
+unauthenticated HTTP listener because every exposed tool has side effects on
+the user's vault, mail, or calendar.
 
 The vault client is constructed lazily on the first tool that needs it and
 closed cleanly on server shutdown via the FastMCP lifespan hook.
@@ -9,6 +11,7 @@ closed cleanly on server shutdown via the FastMCP lifespan hook.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -36,39 +39,48 @@ _transport = os.environ.get("MCP_TRANSPORT", "stdio")
 _server_kwargs: dict = {}
 
 if _transport == "streamable-http":
+    _api_key = os.environ.get("MCP_API_KEY", "")
+    if not _api_key:
+        raise RuntimeError(
+            "MCP_API_KEY must be set when MCP_TRANSPORT=streamable-http; "
+            "the server refuses to run an unauthenticated HTTP listener."
+        )
+
     _server_kwargs["host"] = os.environ.get("MCP_HOST", "0.0.0.0")
     _server_kwargs["port"] = int(os.environ.get("MCP_PORT", "8080"))
     _server_kwargs["stateless_http"] = True
     _server_kwargs["json_response"] = True
 
-    _api_key = os.environ.get("MCP_API_KEY", "")
     _port = int(os.environ.get("MCP_PORT", "8080"))
     _resource_url = os.environ.get("MCP_RESOURCE_URL", f"http://localhost:{_port}")
 
-    if _api_key:
-        from mcp.server.auth.provider import AccessToken, TokenVerifier
-        from mcp.server.auth.settings import AuthSettings
-        from pydantic import AnyHttpUrl
+    from mcp.server.auth.provider import AccessToken, TokenVerifier
+    from mcp.server.auth.settings import AuthSettings
+    from pydantic import AnyHttpUrl
 
-        class _APIKeyVerifier(TokenVerifier):
-            """Verify Bearer tokens against MCP_API_KEY env var."""
+    class _APIKeyVerifier(TokenVerifier):
+        """Verify Bearer tokens against the ``MCP_API_KEY`` env var.
 
-            async def verify_token(self, token: str) -> AccessToken | None:
-                if token != _api_key:
-                    return None
-                return AccessToken(
-                    token=token,
-                    client_id="api-key",
-                    scopes=[],
-                    expires_at=None,
-                )
+        Uses ``hmac.compare_digest`` for constant-time comparison to avoid
+        leaking key length / prefix through response timing.
+        """
 
-        _server_kwargs["token_verifier"] = _APIKeyVerifier()
-        _server_kwargs["auth"] = AuthSettings(
-            issuer_url=AnyHttpUrl(_resource_url),
-            resource_server_url=AnyHttpUrl(_resource_url),
-            required_scopes=[],
-        )
+        async def verify_token(self, token: str) -> AccessToken | None:
+            if not hmac.compare_digest(token, _api_key):
+                return None
+            return AccessToken(
+                token=token,
+                client_id="api-key",
+                scopes=[],
+                expires_at=None,
+            )
+
+    _server_kwargs["token_verifier"] = _APIKeyVerifier()
+    _server_kwargs["auth"] = AuthSettings(
+        issuer_url=AnyHttpUrl(_resource_url),
+        resource_server_url=AnyHttpUrl(_resource_url),
+        required_scopes=[],
+    )
 
 
 _vault: ObsidianVaultClient | None = None

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import email
 import imaplib
+import ipaddress
 import os
 import smtplib
 import ssl
@@ -36,6 +37,8 @@ from .parse import (
     parse_unsubscribe_headers,
     sort_key_for_date,
 )
+
+_BRIDGE_LOCAL_HOSTNAMES = frozenset({"localhost", "proton-bridge"})
 
 VALID_ACCOUNTS = ("primary", "ai")
 _DEFAULT_FETCH_LIMIT = 50
@@ -63,7 +66,7 @@ class ProtonConfig:
 
     @classmethod
     def from_env(cls) -> ProtonConfig:
-        return cls(
+        config = cls(
             imap_host=_required("PROTON_IMAP_HOST"),
             imap_port=int(_required("PROTON_IMAP_PORT")),
             smtp_host=_required("PROTON_SMTP_HOST"),
@@ -73,6 +76,9 @@ class ProtonConfig:
             ai_user=_required("PROTON_AI_USER"),
             ai_password=_required("PROTON_AI_PASSWORD"),
         )
+        _assert_bridge_local(config.imap_host, "PROTON_IMAP_HOST")
+        _assert_bridge_local(config.smtp_host, "PROTON_SMTP_HOST")
+        return config
 
 
 def _required(name: str) -> str:
@@ -80,6 +86,48 @@ def _required(name: str) -> str:
     if not value:
         raise ValueError(f"Required environment variable {name!r} is not set or empty")
     return value
+
+
+def _assert_bridge_local(host: str, var_name: str) -> None:
+    """Refuse non-local Proton Bridge endpoints.
+
+    Bridge serves IMAP/SMTP locally with a self-signed cert, and ``_bridge_ssl_context``
+    disables verification accordingly. If the configured host ever drifts to a
+    non-loopback address, the disabled verification silently becomes a real MITM
+    exposure on the LAN. Accepts loopback IPs (``127.0.0.0/8``, ``::1``) and the
+    conventional hostnames ``localhost`` and ``proton-bridge`` (Docker-network DNS).
+    """
+    if host in _BRIDGE_LOCAL_HOSTNAMES:
+        return
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError(
+            f"{var_name}={host!r} must be a loopback IP, 'localhost', or 'proton-bridge' "
+            "(Proton Bridge uses CERT_NONE TLS; non-local hosts are MITM-exposed)"
+        ) from exc
+    if not ip.is_loopback:
+        raise ValueError(
+            f"{var_name}={host!r} must be a loopback IP (e.g. 127.0.0.1 or ::1); "
+            "Proton Bridge uses CERT_NONE TLS, so non-loopback hosts are MITM-exposed"
+        )
+
+
+def _quote_imap_astring(value: str) -> str:
+    """Return ``value`` properly quoted as an IMAP astring.
+
+    Rejects strings containing CR/LF/NUL — those would allow IMAP protocol
+    injection by breaking out of the quoted argument and starting a new
+    tagged command on the next line. Backslash and double-quote are escaped
+    per RFC 3501.
+    """
+    if any(c in value for c in ("\r", "\n", "\x00")):
+        raise ValueError(
+            "IMAP astring must not contain control characters (CR/LF/NUL); "
+            "rejecting potential protocol injection attempt"
+        )
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _bridge_ssl_context() -> ssl.SSLContext:
@@ -99,8 +147,14 @@ def _imap_connect(config: ProtonConfig, account: str) -> imaplib.IMAP4:
 
 
 def _find_message_id(client: imaplib.IMAP4, message_id: str) -> bytes | None:
+    """Locate a message by ``Message-ID`` header.
+
+    ``message_id`` is quoted via ``_quote_imap_astring`` and passed as a
+    separate IMAP search argument, which prevents protocol injection through
+    attacker-controlled Message-ID values.
+    """
     client.select("INBOX")
-    _, data = client.search(None, f'HEADER Message-ID "{message_id}"')
+    _, data = client.search(None, "HEADER", "Message-ID", _quote_imap_astring(message_id))
     ids = data[0].split()
     return ids[0] if ids else None
 

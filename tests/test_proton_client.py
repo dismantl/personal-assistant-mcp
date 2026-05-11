@@ -9,6 +9,8 @@ import pytest
 
 from personal_assistant_mcp.proton.client import (
     ProtonConfig,
+    _assert_bridge_local,
+    _quote_imap_astring,
     archive_message_ai,
     check_unsubscribe,
     delete_message_ai,
@@ -70,18 +72,18 @@ def _mock_imap(search_uids: bytes = b"", fetch_payload: bytes | None = None) -> 
 
 
 def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PROTON_IMAP_HOST", "h")
+    monkeypatch.setenv("PROTON_IMAP_HOST", "127.0.0.1")
     monkeypatch.setenv("PROTON_IMAP_PORT", "1143")
-    monkeypatch.setenv("PROTON_SMTP_HOST", "h2")
+    monkeypatch.setenv("PROTON_SMTP_HOST", "localhost")
     monkeypatch.setenv("PROTON_SMTP_PORT", "1025")
     monkeypatch.setenv("PROTON_PRIMARY_USER", "p")
     monkeypatch.setenv("PROTON_PRIMARY_PASSWORD", "pp")
     monkeypatch.setenv("PROTON_AI_USER", "a")
     monkeypatch.setenv("PROTON_AI_PASSWORD", "ap")
     config = ProtonConfig.from_env()
-    assert config.imap_host == "h"
+    assert config.imap_host == "127.0.0.1"
     assert config.imap_port == 1143
-    assert config.smtp_host == "h2"
+    assert config.smtp_host == "localhost"
     assert config.smtp_port == 1025
     assert config.primary_user == "p"
 
@@ -94,6 +96,76 @@ def test_credentials_dispatches_by_account() -> None:
 def test_credentials_rejects_unknown_account() -> None:
     with pytest.raises(ValueError, match="Unknown account"):
         _CONFIG.credentials("other")
+
+
+# -----------------------------------------------------------------------------
+# Loopback assertion for Bridge endpoints
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost", "proton-bridge"])
+def test_assert_bridge_local_accepts_loopback_and_known_hostnames(host: str) -> None:
+    _assert_bridge_local(host, "PROTON_IMAP_HOST")  # no raise
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["10.0.0.5", "192.168.1.10", "8.8.8.8", "imap.example.com", "evil.example"],
+)
+def test_assert_bridge_local_rejects_non_local(host: str) -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        _assert_bridge_local(host, "PROTON_IMAP_HOST")
+
+
+def test_proton_config_from_env_rejects_non_local_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROTON_IMAP_HOST", "imap.evil.example")
+    monkeypatch.setenv("PROTON_IMAP_PORT", "1143")
+    monkeypatch.setenv("PROTON_SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("PROTON_SMTP_PORT", "1025")
+    monkeypatch.setenv("PROTON_PRIMARY_USER", "p")
+    monkeypatch.setenv("PROTON_PRIMARY_PASSWORD", "pp")
+    monkeypatch.setenv("PROTON_AI_USER", "a")
+    monkeypatch.setenv("PROTON_AI_PASSWORD", "ap")
+    with pytest.raises(ValueError, match="MITM-exposed"):
+        ProtonConfig.from_env()
+
+
+# -----------------------------------------------------------------------------
+# IMAP astring quoting (injection guard)
+# -----------------------------------------------------------------------------
+
+
+def test_quote_imap_astring_quotes_plain_value() -> None:
+    assert _quote_imap_astring("<m1@example>") == '"<m1@example>"'
+
+
+def test_quote_imap_astring_escapes_backslash_and_quote() -> None:
+    assert _quote_imap_astring('a"b\\c') == '"a\\"b\\\\c"'
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '<a"\r\nUID DELETE 1:*\r\n">',
+        "embedded\nnewline",
+        "embedded\rcarriage",
+        "embedded\x00nul",
+    ],
+)
+def test_quote_imap_astring_rejects_control_chars(payload: str) -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        _quote_imap_astring(payload)
+
+
+async def test_read_message_rejects_imap_injection_attempt() -> None:
+    """A crafted Message-ID containing CRLF must be rejected before IMAP send."""
+    mock_client = _mock_imap()
+    with patch("personal_assistant_mcp.proton.client._imap_connect", return_value=mock_client):
+        with pytest.raises(ValueError, match="control characters"):
+            await read_message(_CONFIG, "primary", 'evil"\r\nUID DELETE 1:*\r\n"')
+    mock_client.search.assert_not_called()
 
 
 # -----------------------------------------------------------------------------

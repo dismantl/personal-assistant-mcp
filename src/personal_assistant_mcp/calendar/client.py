@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import base64
 import os
-import xml.etree.ElementTree as ET  # noqa: N817 - canonical alias for stdlib
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import defusedxml.ElementTree as ET  # noqa: N817 - defused stdlib-compatible alias
 import httpx
 import icalendar
 import recurring_ical_events
