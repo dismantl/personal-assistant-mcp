@@ -17,7 +17,7 @@ from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
-from . import crud
+from . import crud, planner
 from .crud import MoveResult, MutationResult, TaskRef
 from .paths import normalize_vault_path, resolve_move_destination
 
@@ -203,6 +203,30 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         path = normalize_vault_path(file_path)
         result = await crud.delete_task(get_vault(), path, task_id=task_id, body=body)
         return _serialize_mutation(result)
+
+    @mcp.tool()
+    async def tasks_render_planner(spec_path: str = planner.DEFAULT_SPEC_PATH) -> dict[str, Any]:
+        """Render the TODO planner view from its frontmatter spec.
+
+        Args:
+            spec_path: vault path of the note holding the planner spec
+                (default ``TODO.md`` at the vault root).
+
+        Returns a dict with ``markdown`` (the rendered view) and ``sections``
+        (each section's title + ordered task refs).
+        """
+        path = normalize_vault_path(spec_path)
+        output = await planner.render_planner(get_vault(), spec_path=path)
+        return {
+            "markdown": output.to_markdown(),
+            "sections": [
+                {
+                    "title": section.title,
+                    "tasks": [_serialize_task_ref(ref) for ref in section.refs],
+                }
+                for section in output.sections
+            ],
+        }
 
     @mcp.tool()
     async def tasks_move(

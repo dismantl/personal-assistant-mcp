@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 from obsidian_livesync_mcp.models import NoteContent, NoteMetadata
@@ -16,14 +17,17 @@ class FakeVaultClient:
 
     - ``read_note(path) -> NoteContent | None``
     - ``write_note(path, content) -> bool``
+    - ``read_frontmatter(path) -> dict | None``
     - ``list_notes(folder?, limit, skip) -> list[NoteMetadata]``
 
-    Exposes ``notes`` (mutable mapping of path -> markdown) and ``writes``
-    (append-only log of every write call) so tests can introspect both
-    end-state and call history.
+    Exposes ``notes`` (mutable mapping of path -> markdown), ``frontmatters``
+    (path -> dict for ``read_frontmatter``), and ``writes`` (append-only log
+    of every write call) so tests can introspect both end-state and call
+    history.
     """
 
     notes: dict[str, str] = field(default_factory=dict)
+    frontmatters: dict[str, dict[str, Any]] = field(default_factory=dict)
     writes: list[tuple[str, str]] = field(default_factory=list)
 
     async def read_note(self, path: str) -> NoteContent | None:
@@ -41,6 +45,9 @@ class FakeVaultClient:
         self.notes[path] = content
         self.writes.append((path, content))
         return True
+
+    async def read_frontmatter(self, path: str) -> dict[str, Any] | None:
+        return self.frontmatters.get(path)
 
     async def list_notes(
         self, folder: str | None = None, limit: int = 50, skip: int = 0
