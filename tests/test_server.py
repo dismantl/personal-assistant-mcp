@@ -41,5 +41,10 @@ async def test_task_tools_registered() -> None:
         "daily_append_log",
         "daily_append_inbox",
         "daily_archive_old",
+        "weekly_latest",
+        "weekly_read",
+        "weekly_write_current",
+        "digest_read",
+        "digest_write",
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"

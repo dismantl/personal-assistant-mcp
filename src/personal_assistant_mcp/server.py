@@ -18,8 +18,10 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import Settings
 from .daily import tools as daily_tools
+from .digests import tools as digests_tools
 from .tasks import tools as tasks_tools
 from .vault import build_vault_client
+from .weekly import tools as weekly_tools
 
 if TYPE_CHECKING:
     from obsidian_livesync_mcp.client import ObsidianVaultClient
@@ -108,6 +110,8 @@ async def health() -> dict:
 
 tasks_tools.register(mcp, _get_vault)
 daily_tools.register(mcp, _get_vault)
+weekly_tools.register(mcp, _get_vault)
+digests_tools.register(mcp, _get_vault)
 
 
 def main() -> None:
