@@ -178,7 +178,7 @@ async def add_task(
 
     new_task = Task(
         body=cleaned,
-        priority=_resolve_priority(priority),
+        priority=resolve_priority(priority),
         due=due,
         scheduled=scheduled,
         start=start,
@@ -253,7 +253,7 @@ async def update_task(
     if new_body_clean is not None and "\n" in new_body_clean:
         raise ValueError("new_body must not contain newlines")
 
-    resolved_priority = _resolve_priority(new_priority) if new_priority is not None else None
+    resolved_priority = resolve_priority(new_priority) if new_priority is not None else None
 
     def transform(t: Task) -> Task:
         return replace(
@@ -467,7 +467,13 @@ def _rebuild(original: str, new_lines: list[str]) -> str:
     return "\n".join(new_lines) + "\n"
 
 
-def _resolve_priority(value: str | None) -> str | None:
+def resolve_priority(value: str | None) -> str | None:
+    """Translate a bucket name or emoji to a canonical priority emoji.
+
+    Accepts ``None`` (returns ``None``), one of ``high``/``medium``/``low``
+    (case-insensitive), or any of the five priority emoji. Raises
+    ``ValueError`` for any other input.
+    """
     if value is None:
         return None
     if value in PRIORITY_EMOJI:
@@ -512,6 +518,7 @@ __all__ = [
     "list_tasks",
     "move_task",
     "read_tasks",
+    "resolve_priority",
     "search_tasks",
     "uncomplete_task",
     "update_task",

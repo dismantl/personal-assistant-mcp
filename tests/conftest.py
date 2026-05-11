@@ -46,6 +46,9 @@ class FakeVaultClient:
         self.writes.append((path, content))
         return True
 
+    async def delete_note(self, path: str, hard: bool = False) -> bool:
+        return self.notes.pop(path, None) is not None
+
     async def read_frontmatter(self, path: str) -> dict[str, Any] | None:
         return self.frontmatters.get(path)
 
