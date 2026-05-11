@@ -49,6 +49,7 @@ from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
+from ..vault import iter_all_notes
 from .crud import TaskRef, read_tasks
 from .model import Task
 from .render import render_task
@@ -244,19 +245,7 @@ def _matches_source(path: str, spec: PlannerSpec) -> bool:
 
 
 async def _all_notes(vault: ObsidianVaultClient) -> list[Any]:
-    """Page through ``list_notes`` and return all metadata records."""
-    page = 100
-    out: list[Any] = []
-    skip = 0
-    while True:
-        batch = await vault.list_notes(folder=None, limit=page, skip=skip)
-        if not batch:
-            break
-        out.extend(batch)
-        if len(batch) < page:
-            break
-        skip += page
-    return out
+    return await iter_all_notes(vault, folder=None)
 
 
 async def _is_tag_excluded(vault: ObsidianVaultClient, path: str, excluded: frozenset[str]) -> bool:

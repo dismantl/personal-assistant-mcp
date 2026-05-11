@@ -17,6 +17,7 @@ class FakeVaultClient:
 
     - ``read_note(path) -> NoteContent | None``
     - ``write_note(path, content) -> bool``
+    - ``delete_note(path, hard=False) -> bool``
     - ``read_frontmatter(path) -> dict | None``
     - ``list_notes(folder?, limit, skip) -> list[NoteMetadata]``
 
@@ -24,6 +25,17 @@ class FakeVaultClient:
     (path -> dict for ``read_frontmatter``), and ``writes`` (append-only log
     of every write call) so tests can introspect both end-state and call
     history.
+
+    **Divergence from the real client (intentional, documented):**
+
+    - ``read_frontmatter`` reads from a separate ``frontmatters`` dict rather
+      than extracting YAML from ``notes`` content. Adequate for the planner
+      tests (which treat frontmatter as opaque config) but won't catch a
+      regression where the planner starts reading note body alongside
+      frontmatter.
+    - ``read_note`` returns ``None`` for missing files; the real client raises
+      ``ValueError`` if a doc exists but has missing chunks. The chunk-corrupt
+      failure mode is not exercised here.
     """
 
     notes: dict[str, str] = field(default_factory=dict)

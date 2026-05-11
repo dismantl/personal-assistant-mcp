@@ -13,7 +13,16 @@ Env vars (loaded by ``ProtonConfig.from_env``):
 
 Proton Bridge serves IMAP / SMTP locally over TLS with a self-signed
 certificate; the SSL context disables hostname / chain verification to match
-the upstream wrapper behaviour.
+the upstream wrapper behaviour. ``_assert_bridge_local`` restricts the hosts
+to loopback / known-local values so this can't drift into a real MITM exposure.
+
+**Error reporting convention.** Functions here return ``{"error": "..."}``
+dicts for "message not found / unretrievable" cases so MCP-facing agents can
+decide whether to retry or give up. ``ValueError`` is raised only for input
+shape errors (empty fields, IMAP control-char injection). This intentionally
+differs from the rest of the codebase (which raises ``LookupError`` /
+``FileNotFoundError`` uniformly) because mail-not-found is an ordinary outcome,
+not an exceptional one.
 """
 
 from __future__ import annotations
@@ -202,6 +211,11 @@ def _list_folders_sync(config: ProtonConfig, account: str) -> dict[str, Any]:
         _, folders = client.list()
     finally:
         client.logout()
+    # Heuristic LIST parse: works for Proton Bridge's
+    #   (\HasNoChildren) "/" "INBOX"
+    # response shape, but mis-handles folder names containing the literal
+    # substring `"/"`. A proper RFC-3501 response tokenizer would be needed for
+    # full correctness; not needed against Bridge's known folder layout.
     return {
         "account": account,
         "folders": [

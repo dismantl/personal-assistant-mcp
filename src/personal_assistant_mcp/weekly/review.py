@@ -13,6 +13,7 @@ from typing import Any
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
 from ..tasks.paths import DAILY_NOTES_DIR, today_in_vault_tz
+from ..vault import iter_all_notes
 
 WEEKLY_DIR = f"{DAILY_NOTES_DIR}/Weekly Reviews"
 
@@ -93,18 +94,7 @@ async def write_current_weekly(
 
 
 async def _all_weekly_metas(vault: ObsidianVaultClient) -> list[Any]:
-    out: list[Any] = []
-    skip = 0
-    page = 100
-    while True:
-        batch = await vault.list_notes(folder=WEEKLY_DIR, limit=page, skip=skip)
-        if not batch:
-            break
-        out.extend(batch)
-        if len(batch) < page:
-            break
-        skip += page
-    return out
+    return await iter_all_notes(vault, WEEKLY_DIR)
 
 
 __all__ = [

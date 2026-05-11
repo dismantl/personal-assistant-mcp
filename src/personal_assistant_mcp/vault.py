@@ -33,3 +33,28 @@ def build_vault_client(settings: Settings) -> ObsidianVaultClient:
     ``httpx.AsyncClient`` connection pool.
     """
     return ObsidianVaultClient(build_vault_config(settings))
+
+
+async def iter_all_notes(
+    vault: ObsidianVaultClient,
+    folder: str | None = None,
+    *,
+    page: int = 100,
+) -> list:
+    """Page through ``vault.list_notes(folder=...)`` and return every metadata record.
+
+    Centralized so the four subsystems that enumerate notes (tasks/list, daily,
+    weekly, planner) share one paginator. Return type is whatever the upstream
+    client returns (``NoteMetadata``); callers use ``meta.path`` etc.
+    """
+    out: list = []
+    skip = 0
+    while True:
+        batch = await vault.list_notes(folder=folder, limit=page, skip=skip)
+        if not batch:
+            break
+        out.extend(batch)
+        if len(batch) < page:
+            break
+        skip += page
+    return out

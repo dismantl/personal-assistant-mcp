@@ -32,6 +32,7 @@ from obsidian_livesync_mcp.client import ObsidianVaultClient
 from ..tasks import Task, render_task
 from ..tasks.crud import resolve_priority
 from ..tasks.paths import DAILY_NOTES_DIR, VAULT_TIMEZONE, today_in_vault_tz
+from ..vault import iter_all_notes
 
 DAILY_TEMPLATE_PATH = "Templates/Daily Note.md"
 ARCHIVE_ROOT = f"{DAILY_NOTES_DIR}/Archive"
@@ -65,13 +66,23 @@ def append_to_section(content: str, heading: str, new_line: str) -> str:
     The section runs from its heading line up to the next H2 heading (or EOF).
     Trailing blank lines within the section are preserved — the new line is
     inserted before them. Raises ``ValueError`` if the heading is not found.
+
+    Heading detection ignores lines inside fenced code blocks (``\\`\\`\\``
+    delimited) so a code sample containing ``## foo`` doesn't terminate the
+    enclosing section.
     """
     target = heading.strip()
     lines = content.splitlines()
 
     section_start: int | None = None
     section_end = len(lines)
+    in_fence = False
     for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         if section_start is None:
             if line.strip() == target:
                 section_start = i
@@ -88,10 +99,8 @@ def append_to_section(content: str, heading: str, new_line: str) -> str:
         insert_at -= 1
 
     new_lines = lines[:insert_at] + [new_line] + lines[insert_at:]
-    text = "\n".join(new_lines)
-    if content.endswith("\n"):
-        text += "\n"
-    return text
+    # Always force trailing newline (Obsidian canonical shape; matches crud._rebuild).
+    return "\n".join(new_lines) + "\n"
 
 
 # -----------------------------------------------------------------------------
@@ -296,18 +305,7 @@ async def archive_old_dailies(
 
 
 async def _all_daily_metas(vault: ObsidianVaultClient) -> list[Any]:
-    out: list[Any] = []
-    skip = 0
-    page = 100
-    while True:
-        batch = await vault.list_notes(folder=DAILY_NOTES_DIR, limit=page, skip=skip)
-        if not batch:
-            break
-        out.extend(batch)
-        if len(batch) < page:
-            break
-        skip += page
-    return out
+    return await iter_all_notes(vault, DAILY_NOTES_DIR)
 
 
 __all__ = [

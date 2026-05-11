@@ -53,8 +53,9 @@ def normalize_vault_path(raw: str, *, today: date | None = None) -> str:
     if p.startswith("vault://"):
         p = p[len("vault://") :]
 
-    while p.startswith("./") or p.startswith("/"):
-        p = p[2:] if p.startswith("./") else p[1:]
+    while p.startswith("./"):
+        p = p[2:]
+    p = p.lstrip("/")
 
     p = re.sub(r"/+", "/", p).rstrip("/")
 

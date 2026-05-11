@@ -9,12 +9,13 @@ so callers can surface a warning.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
+from ..vault import iter_all_notes
 from .model import Task
 from .parse import PRIORITY_EMOJI, parse_task
 from .paths import today_in_vault_tz
@@ -192,7 +193,7 @@ async def add_task(
     else:
         lines = note.content.splitlines()
         lines.append(rendered)
-        await vault.write_note(file_path, _rebuild(note.content, lines))
+        await vault.write_note(file_path, _rebuild(lines))
 
     return TaskRef(file_path, new_task)
 
@@ -325,7 +326,7 @@ async def move_task(
     if not task_already_in_dest:
         rendered = render_task(task)
         new_dest_lines = dest_lines + [rendered]
-        await vault.write_note(dest_path, _rebuild(dest_content, new_dest_lines))
+        await vault.write_note(dest_path, _rebuild(new_dest_lines))
 
     # Step 4 — optimistic concurrency check on source
     fresh_source = await vault.read_note(source_path)
@@ -349,7 +350,7 @@ async def move_task(
 
     # Step 5 — remove from source
     new_source_lines = source_lines[:line_idx] + source_lines[line_idx + 1 :]
-    await vault.write_note(source_path, _rebuild(source_note.content, new_source_lines))
+    await vault.write_note(source_path, _rebuild(new_source_lines))
 
     return MoveResult(
         ref=TaskRef(dest_path, task),
@@ -379,7 +380,7 @@ async def delete_task(
 
     line_idx, old_task = matches[0]
     new_lines = lines[:line_idx] + lines[line_idx + 1 :]
-    await vault.write_note(file_path, _rebuild(note.content, new_lines))
+    await vault.write_note(file_path, _rebuild(new_lines))
     return MutationResult(
         ref=TaskRef(file_path, old_task),
         multiple_matches_in_file=len(matches) > 1,
@@ -461,22 +462,20 @@ async def _apply_to_first_match(
     line_idx, old_task = matches[0]
     new_task = transform(old_task)
     lines[line_idx] = render_task(new_task)
-    await vault.write_note(file_path, _rebuild(note.content, lines))
+    await vault.write_note(file_path, _rebuild(lines))
     return MutationResult(
         ref=TaskRef(file_path, new_task),
         multiple_matches_in_file=len(matches) > 1,
     )
 
 
-def _rebuild(original: str, new_lines: list[str]) -> str:
+def _rebuild(new_lines: list[str]) -> str:
     """Join lines back into a single string with a trailing newline.
 
     Empty ``new_lines`` returns ``""``. Otherwise the output always ends with
     ``\\n`` — Obsidian's canonical file shape, and the only way to reliably
     append to a previously-empty file without producing a missing-newline state.
-    The ``original`` arg is unused but kept for callers passing it explicitly.
     """
-    del original  # currently unused; reserved for future newline-style preservation
     if not new_lines:
         return ""
     return "\n".join(new_lines) + "\n"
@@ -502,20 +501,9 @@ def resolve_priority(value: str | None) -> str | None:
     )
 
 
-async def _enumerate_notes(vault: ObsidianVaultClient, folder: str | None) -> list[object]:
+async def _enumerate_notes(vault: ObsidianVaultClient, folder: str | None) -> list:
     """Page through ``list_notes`` and return all metadata records."""
-    page = 100
-    out: list[object] = []
-    skip = 0
-    while True:
-        batch = await vault.list_notes(folder=folder, limit=page, skip=skip)
-        if not batch:
-            break
-        out.extend(batch)
-        if len(batch) < page:
-            break
-        skip += page
-    return out
+    return await iter_all_notes(vault, folder)
 
 
 def _should_skip_path(path: str) -> bool:
@@ -538,7 +526,3 @@ __all__ = [
     "uncomplete_task",
     "update_task",
 ]
-
-
-# Make the Awaitable import explicit for future type-checking with `Callable` returns.
-_ = Awaitable  # noqa: B018 - referenced for type-readers

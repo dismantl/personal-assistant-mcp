@@ -66,16 +66,10 @@ def test_append_to_section_at_eof() -> None:
     assert result == "## Inbox\n## Log\n- 10:00 — area: did thing\n"
 
 
-def test_append_to_section_preserves_trailing_newline() -> None:
-    content = "## Log\n"  # has trailing newline
-    result = append_to_section(content, "## Log", "- entry")
-    assert result.endswith("\n")
-
-
-def test_append_to_section_no_trailing_newline() -> None:
-    content = "## Log"  # no trailing newline
-    result = append_to_section(content, "## Log", "- entry")
-    assert not result.endswith("\n")
+def test_append_to_section_forces_trailing_newline() -> None:
+    """Output always ends with ``\\n`` (Obsidian canonical shape), regardless of input."""
+    assert append_to_section("## Log\n", "## Log", "- entry").endswith("\n")
+    assert append_to_section("## Log", "## Log", "- entry").endswith("\n")
 
 
 def test_append_to_section_raises_when_missing() -> None:
@@ -90,6 +84,41 @@ def test_append_to_section_ignores_h3_subheadings() -> None:
     result = append_to_section(content, "## Inbox", "- [ ] beta")
     assert "- [ ] alpha\n- [ ] beta" in result
     assert "## Reflection" in result
+
+
+def test_append_to_section_ignores_h2_inside_fenced_code_block() -> None:
+    """A ``## foo`` line inside a fenced code block must not terminate the section."""
+    content = (
+        "## Inbox\n"
+        "- [ ] alpha\n"
+        "```\n"
+        "## not a real heading\n"
+        "```\n"
+        "- [ ] beta\n"
+        "## Reflection\n"
+    )
+    result = append_to_section(content, "## Inbox", "- [ ] gamma")
+    # New line should land before "## Reflection", after "- [ ] beta"
+    assert "- [ ] beta\n- [ ] gamma\n## Reflection" in result
+    # The fenced sample heading stays intact
+    assert "```\n## not a real heading\n```" in result
+
+
+def test_append_to_section_ignores_target_inside_fenced_code_block() -> None:
+    """The section *opening* match also skips fenced content."""
+    content = (
+        "## Notes\n"
+        "```\n"
+        "## Inbox\n"
+        "```\n"
+        "## Inbox\n"
+        "- [ ] real\n"
+    )
+    result = append_to_section(content, "## Inbox", "- [ ] new")
+    # The append must land under the real heading at the end, not the fenced sample
+    assert result.endswith("- [ ] real\n- [ ] new\n") or result.endswith(
+        "- [ ] real\n- [ ] new"
+    )
 
 
 # -----------------------------------------------------------------------------
