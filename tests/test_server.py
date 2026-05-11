@@ -51,5 +51,7 @@ async def test_task_tools_registered() -> None:
         "calendar_list",
         "calendar_today",
         "calendar_week",
+        "release_state_read",
+        "release_state_update",
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"

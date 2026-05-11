@@ -21,6 +21,7 @@ from .config import Settings
 from .daily import tools as daily_tools
 from .digests import tools as digests_tools
 from .freshrss import tools as freshrss_tools
+from .release import tools as release_tools
 from .tasks import tools as tasks_tools
 from .vault import build_vault_client
 from .weekly import tools as weekly_tools
@@ -114,6 +115,7 @@ tasks_tools.register(mcp, _get_vault)
 daily_tools.register(mcp, _get_vault)
 weekly_tools.register(mcp, _get_vault)
 digests_tools.register(mcp, _get_vault)
+release_tools.register(mcp, _get_vault)
 freshrss_tools.register(mcp)
 calendar_tools.register(mcp)
 
