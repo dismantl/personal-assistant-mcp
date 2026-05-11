@@ -263,6 +263,32 @@ async def test_archive_returns_error_when_message_missing() -> None:
     mock_client.copy.assert_not_called()
 
 
+async def test_archive_returns_error_and_skips_store_when_copy_fails() -> None:
+    """If COPY returns non-OK, the message must remain in INBOX (no flag-set, no expunge)."""
+    mock_client = _mock_imap(search_uids=b"5")
+    mock_client.copy.return_value = ("NO", [b"permission denied"])
+    with patch("personal_assistant_mcp.proton.client._imap_connect", return_value=mock_client):
+        result = await archive_message_ai(_CONFIG, "<m1@example>")
+    assert "error" in result
+    assert "Failed to copy to Archive" in result["error"]
+    assert result["account"] == "ai"
+    # Critical: must NOT have flagged the source for deletion or expunged
+    mock_client.store.assert_not_called()
+    mock_client.expunge.assert_not_called()
+
+
+async def test_delete_returns_error_and_skips_store_when_copy_fails() -> None:
+    """Symmetric to archive: failed COPY to Trash leaves the source untouched."""
+    mock_client = _mock_imap(search_uids=b"5")
+    mock_client.copy.return_value = ("NO", [b"quota exceeded"])
+    with patch("personal_assistant_mcp.proton.client._imap_connect", return_value=mock_client):
+        result = await delete_message_ai(_CONFIG, "<m1@example>")
+    assert "error" in result
+    assert "Failed to copy to Trash" in result["error"]
+    mock_client.store.assert_not_called()
+    mock_client.expunge.assert_not_called()
+
+
 # -----------------------------------------------------------------------------
 # send_message_ai
 # -----------------------------------------------------------------------------

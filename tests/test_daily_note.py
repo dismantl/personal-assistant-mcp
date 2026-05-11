@@ -88,15 +88,7 @@ def test_append_to_section_ignores_h3_subheadings() -> None:
 
 def test_append_to_section_ignores_h2_inside_fenced_code_block() -> None:
     """A ``## foo`` line inside a fenced code block must not terminate the section."""
-    content = (
-        "## Inbox\n"
-        "- [ ] alpha\n"
-        "```\n"
-        "## not a real heading\n"
-        "```\n"
-        "- [ ] beta\n"
-        "## Reflection\n"
-    )
+    content = "## Inbox\n- [ ] alpha\n```\n## not a real heading\n```\n- [ ] beta\n## Reflection\n"
     result = append_to_section(content, "## Inbox", "- [ ] gamma")
     # New line should land before "## Reflection", after "- [ ] beta"
     assert "- [ ] beta\n- [ ] gamma\n## Reflection" in result
@@ -106,19 +98,10 @@ def test_append_to_section_ignores_h2_inside_fenced_code_block() -> None:
 
 def test_append_to_section_ignores_target_inside_fenced_code_block() -> None:
     """The section *opening* match also skips fenced content."""
-    content = (
-        "## Notes\n"
-        "```\n"
-        "## Inbox\n"
-        "```\n"
-        "## Inbox\n"
-        "- [ ] real\n"
-    )
+    content = "## Notes\n```\n## Inbox\n```\n## Inbox\n- [ ] real\n"
     result = append_to_section(content, "## Inbox", "- [ ] new")
     # The append must land under the real heading at the end, not the fenced sample
-    assert result.endswith("- [ ] real\n- [ ] new\n") or result.endswith(
-        "- [ ] real\n- [ ] new"
-    )
+    assert result.endswith("- [ ] real\n- [ ] new\n") or result.endswith("- [ ] real\n- [ ] new")
 
 
 # -----------------------------------------------------------------------------
