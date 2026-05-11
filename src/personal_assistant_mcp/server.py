@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
 
+from .calendar import tools as calendar_tools
 from .config import Settings
 from .daily import tools as daily_tools
 from .digests import tools as digests_tools
+from .freshrss import tools as freshrss_tools
 from .tasks import tools as tasks_tools
 from .vault import build_vault_client
 from .weekly import tools as weekly_tools
@@ -112,6 +114,8 @@ tasks_tools.register(mcp, _get_vault)
 daily_tools.register(mcp, _get_vault)
 weekly_tools.register(mcp, _get_vault)
 digests_tools.register(mcp, _get_vault)
+freshrss_tools.register(mcp)
+calendar_tools.register(mcp)
 
 
 def main() -> None:
