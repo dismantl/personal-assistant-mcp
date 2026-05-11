@@ -55,6 +55,15 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return {"notes": notes}
 
     @mcp.tool()
+    async def daily_write_today(content: str) -> dict[str, Any]:
+        """Overwrite today's daily note with ``content``.
+
+        Use when a workflow composes the full note body (e.g., morning planning).
+        For incremental edits, prefer ``daily_append_log`` / ``daily_append_inbox``.
+        """
+        return await daily_note.write_daily(get_vault(), content)
+
+    @mcp.tool()
     async def daily_append_log(project: str, description: str) -> dict[str, Any]:
         """Append a ``- HH:MM — Project: description`` entry to today's Log section.
 

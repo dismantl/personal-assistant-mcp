@@ -19,6 +19,7 @@ from personal_assistant_mcp.daily.note import (
     get_template,
     read_daily,
     read_recent_dailies,
+    write_daily,
 )
 from personal_assistant_mcp.tasks.paths import VAULT_TIMEZONE
 from tests.conftest import FakeVaultClient
@@ -193,6 +194,31 @@ async def test_read_recent_dailies_ignores_non_date_notes(
     fake_vault.notes["0 Logs/2026-05-10.md"] = "daily"
     result = await read_recent_dailies(fake_vault, n=10, today=_TODAY)
     assert [r["date"] for r in result] == ["2026-05-10"]
+
+
+# -----------------------------------------------------------------------------
+# write_daily
+# -----------------------------------------------------------------------------
+
+
+async def test_write_daily_creates_when_missing(fake_vault: FakeVaultClient) -> None:
+    result = await write_daily(fake_vault, "## Priorities\nfoo\n", today=_TODAY)
+    assert result["created"] is True
+    assert result["date"] == "2026-05-11"
+    assert result["path"] == "0 Logs/2026-05-11.md"
+    assert fake_vault.notes["0 Logs/2026-05-11.md"] == "## Priorities\nfoo\n"
+
+
+async def test_write_daily_overwrites_existing(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes["0 Logs/2026-05-11.md"] = "old content\n"
+    result = await write_daily(fake_vault, "new content", today=_TODAY)
+    assert result["created"] is False
+    assert fake_vault.notes["0 Logs/2026-05-11.md"] == "new content\n"
+
+
+async def test_write_daily_forces_trailing_newline(fake_vault: FakeVaultClient) -> None:
+    await write_daily(fake_vault, "no trailing newline", today=_TODAY)
+    assert fake_vault.notes["0 Logs/2026-05-11.md"].endswith("\n")
 
 
 # -----------------------------------------------------------------------------

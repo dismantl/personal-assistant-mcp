@@ -170,6 +170,32 @@ async def read_recent_dailies(
     return out
 
 
+async def write_daily(
+    vault: ObsidianVaultClient,
+    content: str,
+    *,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """Overwrite today's daily note with ``content``.
+
+    Returns a summary dict. Forces a trailing newline. Use when a workflow
+    composes the full note body (e.g., morning planning) and needs to write
+    it atomically. For incremental edits prefer ``append_log`` / ``append_inbox_task``.
+    """
+    today = today or today_in_vault_tz()
+    path = daily_path(today)
+    if not content.endswith("\n"):
+        content = content + "\n"
+    existed = await vault.read_note(path) is not None
+    await vault.write_note(path, content)
+    return {
+        "date": today.isoformat(),
+        "path": path,
+        "created": not existed,
+        "size": len(content),
+    }
+
+
 async def append_log(
     vault: ObsidianVaultClient,
     project: str,
@@ -321,4 +347,5 @@ __all__ = [
     "get_template",
     "read_daily",
     "read_recent_dailies",
+    "write_daily",
 ]

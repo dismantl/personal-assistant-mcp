@@ -38,6 +38,7 @@ async def test_task_tools_registered() -> None:
         "daily_read_today",
         "daily_read",
         "daily_read_recent",
+        "daily_write_today",
         "daily_append_log",
         "daily_append_inbox",
         "daily_archive_old",
