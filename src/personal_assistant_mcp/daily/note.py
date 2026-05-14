@@ -1,6 +1,6 @@
 """Daily-note operations: template instantiation, sectional appends, archive, read.
 
-Sectional appends are the non-obvious part. Holden's template is::
+Sectional appends are the non-obvious part. A typical daily-note template is::
 
     ## Priorities
 

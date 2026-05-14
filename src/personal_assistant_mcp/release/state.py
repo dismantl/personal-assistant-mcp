@@ -80,8 +80,8 @@ async def migrate_from_local_file(
 ) -> dict[str, Any]:
     """One-shot helper to move release state from a local JSON file into the vault.
 
-    Refuses to overwrite an existing vault-resident state file. Intended for
-    Phase-11 deploy cutover — not exposed as an MCP tool.
+    Refuses to overwrite an existing vault-resident state file. Intended for a
+    one-time migration from a prior local state file, not exposed as an MCP tool.
     """
     path = Path(source_path) if isinstance(source_path, str) else source_path
     if not path.is_file():

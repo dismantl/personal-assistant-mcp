@@ -15,8 +15,8 @@ from personal_assistant_mcp.tasks.planner import (
 from tests.conftest import FakeVaultClient
 
 
-def _holden_spec_fm() -> dict:
-    """Holden's real TODO.md frontmatter, verbatim from the vault."""
+def _planner_spec_fm() -> dict:
+    """Representative TODO.md frontmatter for planner rendering tests."""
     return {
         "type": "todo-planner-spec",
         "version": 1,
@@ -83,7 +83,7 @@ def _holden_spec_fm() -> dict:
 
 
 def test_parse_spec_full() -> None:
-    spec = parse_spec(_holden_spec_fm())
+    spec = parse_spec(_planner_spec_fm())
     assert isinstance(spec, PlannerSpec)
     assert spec.roots == ("0 Logs",)
     assert spec.basename_matches_ci == ("todo",)
@@ -129,7 +129,7 @@ def test_parse_spec_rejects_unknown_section_kind() -> None:
 async def test_load_planner_spec_reads_frontmatter(
     fake_vault: FakeVaultClient,
 ) -> None:
-    fake_vault.frontmatters["TODO.md"] = _holden_spec_fm()
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
     spec = await load_planner_spec(fake_vault)
     assert spec.roots == ("0 Logs",)
 
@@ -142,12 +142,12 @@ async def test_load_planner_spec_missing_raises(
 
 
 # -----------------------------------------------------------------------------
-# render_planner — end-to-end with Holden's spec
+# render_planner - end-to-end with representative planner spec
 # -----------------------------------------------------------------------------
 
 
 def _seed_vault_with_realistic_content(fake_vault: FakeVaultClient) -> None:
-    fake_vault.frontmatters["TODO.md"] = _holden_spec_fm()
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
 
     fake_vault.notes["0 Logs/2026-05-11.md"] = (
         "## Inbox\n"
@@ -158,8 +158,8 @@ def _seed_vault_with_realistic_content(fake_vault: FakeVaultClient) -> None:
     )
     fake_vault.notes["0 Logs/2026-05-10.md"] = "- [/] in progress task\n"
 
-    fake_vault.notes["1 Projects/acab-ansible/todo.md"] = (
-        "- [ ] ansible task one\n- [ ] ansible task two\n"
+    fake_vault.notes["1 Projects/example-project/todo.md"] = (
+        "- [ ] project task one\n- [ ] project task two\n"
     )
     fake_vault.notes["1 Projects/personal-assistant-mcp/todo.md"] = "- [ ] PA-MCP task A\n"
     fake_vault.notes["2 Areas/health/todo.md"] = "- [ ] go for run\n"
@@ -181,7 +181,7 @@ async def test_render_planner_full_pipeline(fake_vault: FakeVaultClient) -> None
     assert titles == [
         "Inbox",
         "High Priority",
-        "acab-ansible",
+        "example-project",
         "personal-assistant-mcp",
         "health",
         "Low Priority",
@@ -194,9 +194,9 @@ async def test_render_planner_full_pipeline(fake_vault: FakeVaultClient) -> None
     }
     assert {r.task.body for r in by_title["High Priority"].refs} == {"urgent thing"}
     assert {r.task.body for r in by_title["Low Priority"].refs} == {"less important"}
-    assert {r.task.body for r in by_title["acab-ansible"].refs} == {
-        "ansible task one",
-        "ansible task two",
+    assert {r.task.body for r in by_title["example-project"].refs} == {
+        "project task one",
+        "project task two",
     }
     assert {r.task.body for r in by_title["personal-assistant-mcp"].refs} == {"PA-MCP task A"}
     assert {r.task.body for r in by_title["health"].refs} == {"go for run"}
@@ -215,7 +215,7 @@ async def test_render_planner_excludes_archives_and_notasks_tag(
 async def test_render_planner_excludes_done_and_cancelled(
     fake_vault: FakeVaultClient,
 ) -> None:
-    fake_vault.frontmatters["TODO.md"] = _holden_spec_fm()
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
     fake_vault.notes["0 Logs/today.md"] = (
         "- [ ] open\n- [x] done\n- [-] cancelled\n- [/] in_progress\n"
     )
@@ -228,7 +228,7 @@ async def test_render_planner_omits_empty_folder_children(
     fake_vault: FakeVaultClient,
 ) -> None:
     """folderChildren sections only show folders that have at least one task."""
-    fake_vault.frontmatters["TODO.md"] = _holden_spec_fm()
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
     fake_vault.notes["1 Projects/has-tasks/todo.md"] = "- [ ] one\n"
     fake_vault.notes["1 Projects/empty/todo.md"] = ""
     output = await render_planner(fake_vault)

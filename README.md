@@ -6,7 +6,9 @@ Companion to [obsidian-livesync-mcp](https://github.com/dismantl/obsidian-livesy
 
 ## Status
 
-Server-code complete: 47 MCP tools across tasks/daily/weekly/digests/FreshRSS/CalDAV/release-state/Proton-email subsystems. ~6500 LOC, 323 tests. Deployment via Ansible (cutover from the legacy Hermes plugin) is the remaining work; see the spec in the user's vault.
+Alpha. The server includes MCP tools across tasks, daily/weekly notes, digests,
+FreshRSS, CalDAV, release-state tracking, and Proton Mail. It can run over stdio
+for local MCP clients or authenticated streamable HTTP for hosted use.
 
 ## Quick start
 

@@ -1,12 +1,12 @@
 """Render the TODO planner view from a frontmatter-defined spec.
 
-Ports the behaviour of ``obsidian_todo_render.js`` / the ``dataviewjs`` block
-in Holden's ``TODO.md``. The spec lives in the frontmatter of a vault note
+Ports the behaviour of a ``dataviewjs``-style TODO renderer. The spec lives in
+the frontmatter of a vault note
 (default: ``TODO.md`` at the vault root). The renderer walks notes matching
 the ``sourceSelection`` rules, parses tasks, and groups them across the
 configured ``sections``.
 
-Spec schema (verbatim from Holden's TODO.md frontmatter)::
+Spec schema (example frontmatter)::
 
     type: todo-planner-spec
     version: 1

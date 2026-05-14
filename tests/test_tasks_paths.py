@@ -96,7 +96,7 @@ def test_today_in_vault_tz_returns_date() -> None:
 
 
 def test_normalize_preserves_unicode_path_segments() -> None:
-    """Vault paths may contain Unicode (Holden's folders use spaces and emoji-adjacent chars)."""
+    """Vault paths may contain Unicode, spaces, and emoji-adjacent characters."""
     assert (
         normalize_vault_path("3 Resources/digests/releases/2026-05-11.md", today=_FIXED_TODAY)
         == "3 Resources/digests/releases/2026-05-11.md"

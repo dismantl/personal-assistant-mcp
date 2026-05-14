@@ -3,7 +3,7 @@
 Transport: stdio by default, or streamable-http when ``MCP_TRANSPORT=streamable-http``.
 In HTTP mode ``MCP_API_KEY`` is **required**; the server refuses to start an
 unauthenticated HTTP listener because every exposed tool has side effects on
-the user's vault, mail, or calendar.
+the configured vault, mail, or calendar.
 
 The vault client is constructed lazily on the first tool that needs it and
 closed cleanly on server shutdown via the FastMCP lifespan hook.
@@ -116,7 +116,7 @@ mcp = FastMCP("personal-assistant", **_server_kwargs)
 
 @mcp.tool()
 async def health() -> dict:
-    """Return server health status. Useful as a deployment smoke test."""
+    """Return server health status. Useful as a runtime smoke test."""
     return {
         "status": "ok",
         "service": "personal-assistant-mcp",
