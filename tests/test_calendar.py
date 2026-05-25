@@ -340,6 +340,9 @@ END:VCALENDAR
 
 @respx.mock
 async def test_create_event_puts_ical_to_calendar_resource() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
     route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
         return_value=httpx.Response(201)
     )
@@ -374,6 +377,9 @@ async def test_create_event_puts_ical_to_calendar_resource() -> None:
 
 @respx.mock
 async def test_create_event_serializes_offset_datetimes_as_utc() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
     route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
         return_value=httpx.Response(201)
     )
@@ -398,6 +404,9 @@ async def test_create_event_accepts_non_path_uid_with_safe_resource_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID("12345678-1234-5678-1234-567812345678"))
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
     route = respx.put("https://cal.example/dav/personal/12345678123456781234567812345678.ics").mock(
         return_value=httpx.Response(201)
     )
@@ -418,6 +427,36 @@ async def test_create_event_accepts_non_path_uid_with_safe_resource_id(
     }
     body = route.calls.last.request.content.decode()
     assert "UID:2026/05/11:event_123@example.com" in body
+
+
+@respx.mock
+async def test_create_event_returns_error_when_supplied_uid_exists_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID("12345678-1234-5678-1234-567812345678"))
+    report_route = respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_COMPLEX_UID_XML)
+    )
+    put_route = respx.put(
+        "https://cal.example/dav/personal/12345678123456781234567812345678.ics"
+    ).mock(return_value=httpx.Response(201))
+
+    result = await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="2026/05/11:event_123@example.com",
+        summary="Dentist",
+        start="2026-05-11T10:00:00-04:00",
+        end="2026-05-11T11:00:00-04:00",
+    )
+
+    assert result == {
+        "error": "Event already exists: 2026/05/11:event_123@example.com",
+        "uid": "2026/05/11:event_123@example.com",
+        "href": "https://cal.example/dav/personal/complex-resource.ics",
+    }
+    assert report_route.called
+    assert not put_route.called
 
 
 @respx.mock

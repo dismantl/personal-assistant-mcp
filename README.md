@@ -88,9 +88,10 @@ for local MCP clients or authenticated streamable HTTP for hosted use.
 
 Calendar mutation tools use the `slug` returned by `calendar_list` as
 `calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
-`If-None-Match: *` to avoid overwriting existing events. `calendar_update_event`
-performs a full resource replacement for the supplied iCalendar UID, which does
-not need to match the CalDAV resource filename.
+`If-None-Match: *` to avoid overwriting existing events. When a UID is supplied,
+`calendar_create_event` first checks whether that iCalendar UID already exists.
+`calendar_update_event` performs a full resource replacement for the supplied
+iCalendar UID, which does not need to match the CalDAV resource filename.
 
 ### Proton mail
 

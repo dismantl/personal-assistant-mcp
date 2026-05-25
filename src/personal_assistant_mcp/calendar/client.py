@@ -350,7 +350,8 @@ async def create_event(
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
-    event_uid = _validate_uid_text(uid, "uid") if uid is not None else uuid.uuid4().hex
+    has_supplied_uid = uid is not None
+    event_uid = _validate_uid_text(uid, "uid") if has_supplied_uid else uuid.uuid4().hex
     resource_id = _resource_id_for_uid(event_uid)
     body = _build_event_ical(
         uid=event_uid,
@@ -364,6 +365,16 @@ async def create_event(
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
+        if has_supplied_uid:
+            existing_href = await _find_event_href_by_uid(
+                config, calendar_slug, event_uid, client=client
+            )
+            if existing_href is not None:
+                return {
+                    "error": f"Event already exists: {event_uid}",
+                    "uid": event_uid,
+                    "href": existing_href,
+                }
         href = _event_href(config, calendar_slug, resource_id)
         response = await client.put(
             href,
