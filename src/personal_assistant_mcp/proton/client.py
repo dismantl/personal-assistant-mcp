@@ -53,6 +53,7 @@ VALID_ACCOUNTS = ("primary", "ai")
 _DEFAULT_FETCH_LIMIT = 50
 _UNREAD_WINDOW_DAYS = 7
 _RECENT_WINDOW_DAYS = 3
+_AI_SEND_FROM_ADDRESS = "danstaples@acab.enterprises"
 
 
 @dataclass(frozen=True)
@@ -276,7 +277,7 @@ def _send_message_sync(
     config: ProtonConfig, to_addr: str, subject: str, body: str
 ) -> dict[str, Any]:
     message = MIMEText(body)
-    message["From"] = config.ai_user
+    message["From"] = _AI_SEND_FROM_ADDRESS
     message["To"] = to_addr
     message["Subject"] = subject
     with smtplib.SMTP(config.smtp_host, config.smtp_port) as smtp:
@@ -287,7 +288,7 @@ def _send_message_sync(
         "success": True,
         "to": to_addr,
         "subject": subject,
-        "from": config.ai_user,
+        "from": _AI_SEND_FROM_ADDRESS,
         "account": "ai",
     }
 

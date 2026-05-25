@@ -301,11 +301,13 @@ async def test_send_message_ai_uses_smtp_correctly() -> None:
         result = await send_message_ai(_CONFIG, "to@example", "Test subject", "Hello world")
     assert result["success"] is True
     assert result["to"] == "to@example"
-    assert result["from"] == "ai@example"
+    assert result["from"] == "danstaples@acab.enterprises"
     mock_smtp_class.assert_called_once_with("127.0.0.1", 1025)
     mock_smtp_instance.starttls.assert_called_once()
     mock_smtp_instance.login.assert_called_once_with("ai@example", "ai-pw")
     mock_smtp_instance.send_message.assert_called_once()
+    sent_message = mock_smtp_instance.send_message.call_args.args[0]
+    assert sent_message["From"] == "danstaples@acab.enterprises"
 
 
 async def test_send_message_rejects_empty_fields() -> None:
