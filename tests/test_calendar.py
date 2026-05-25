@@ -10,8 +10,11 @@ import respx
 
 from personal_assistant_mcp.calendar.client import (
     CalDAVConfig,
+    create_event,
+    delete_event,
     fetch_events,
     list_calendars,
+    update_event,
 )
 
 _CONFIG = CalDAVConfig(
@@ -279,3 +282,104 @@ END:VCALENDAR
     )
     events = await fetch_events(_CONFIG, "today", now=_FIXED_NOW)
     assert [e["summary"] for e in events] == ["Earlier", "Later"]
+
+
+# -----------------------------------------------------------------------------
+# Event mutation
+# -----------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_create_event_puts_ical_to_calendar_resource() -> None:
+    route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    result = await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Dentist",
+        start="2026-05-11T14:00:00+00:00",
+        end="2026-05-11T15:00:00+00:00",
+        description="Cleaning",
+        location="Downtown",
+    )
+
+    assert result == {
+        "uid": "event-123",
+        "href": "https://cal.example/dav/personal/event-123.ics",
+        "created": True,
+    }
+    request = route.calls.last.request
+    assert request.headers["Authorization"] == "Basic dXNlcjpwYXNz"
+    assert request.headers["Content-Type"] == "text/calendar; charset=utf-8"
+    assert request.headers["If-None-Match"] == "*"
+    body = request.content.decode()
+    assert "BEGIN:VEVENT" in body
+    assert "UID:event-123" in body
+    assert "SUMMARY:Dentist" in body
+    assert "DESCRIPTION:Cleaning" in body
+    assert "LOCATION:Downtown" in body
+
+
+@respx.mock
+async def test_update_event_replaces_ical_calendar_resource() -> None:
+    route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Dentist moved",
+        start="2026-05-11T16:00:00+00:00",
+        end="2026-05-11T17:00:00+00:00",
+    )
+
+    assert result == {
+        "uid": "event-123",
+        "href": "https://cal.example/dav/personal/event-123.ics",
+        "updated": True,
+    }
+    request = route.calls.last.request
+    assert "If-None-Match" not in request.headers
+    body = request.content.decode()
+    assert "SUMMARY:Dentist moved" in body
+    assert "DTSTART:20260511T160000Z" in body
+    assert "DTEND:20260511T170000Z" in body
+
+
+@respx.mock
+async def test_delete_event_deletes_calendar_resource() -> None:
+    route = respx.delete("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await delete_event(_CONFIG, calendar_slug="personal", uid="event-123")
+
+    assert result == {
+        "uid": "event-123",
+        "href": "https://cal.example/dav/personal/event-123.ics",
+        "deleted": True,
+    }
+    request = route.calls.last.request
+    assert request.headers["Authorization"] == "Basic dXNlcjpwYXNz"
+
+
+async def test_create_event_rejects_end_before_start() -> None:
+    with pytest.raises(ValueError, match="end"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            uid="event-123",
+            summary="Bad event",
+            start="2026-05-11T15:00:00+00:00",
+            end="2026-05-11T14:00:00+00:00",
+        )
+
+
+async def test_delete_event_rejects_unsafe_uid() -> None:
+    with pytest.raises(ValueError, match="uid"):
+        await delete_event(_CONFIG, calendar_slug="personal", uid="../event-123")

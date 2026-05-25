@@ -1,4 +1,4 @@
-"""CalDAV client for calendar reads.
+"""CalDAV client for calendar reads and event mutation.
 
 Ported from ``calendar_fetch.py``. Lists calendars via ``PROPFIND``, fetches
 each calendar's ICS export via ``GET``, expands recurring events via
@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import base64
 import os
+import re
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -38,6 +40,7 @@ _PROPFIND_BODY = (
     "  <d:prop><d:displayname/><d:resourcetype/></d:prop>\n"
     "</d:propfind>"
 )
+_SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~@-]+$")
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,68 @@ def _window(
     days = 1 if kind == "today" else 7
     end_local = start_local + timedelta(days=days)
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _parse_iso_datetime(value: str, field_name: str) -> datetime:
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO 8601 datetime string") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field_name} must include a timezone offset")
+    return parsed
+
+
+def _validate_path_segment(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped or not _SAFE_PATH_SEGMENT.fullmatch(stripped):
+        raise ValueError(f"{field_name} must be a safe CalDAV path segment")
+    return stripped
+
+
+def _event_href(config: CalDAVConfig, calendar_slug: str, uid: str) -> str:
+    safe_calendar = _validate_path_segment(calendar_slug, "calendar_slug")
+    safe_uid = _validate_path_segment(uid, "uid")
+    return f"{config.base_url.rstrip('/')}/{safe_calendar}/{safe_uid}.ics"
+
+
+def _build_event_ical(
+    *,
+    uid: str,
+    summary: str,
+    start: str,
+    end: str,
+    description: str | None = None,
+    location: str | None = None,
+) -> bytes:
+    safe_uid = _validate_path_segment(uid, "uid")
+    clean_summary = summary.strip()
+    if not clean_summary:
+        raise ValueError("summary must not be empty")
+
+    dtstart = _parse_iso_datetime(start, "start")
+    dtend = _parse_iso_datetime(end, "end")
+    if dtend <= dtstart:
+        raise ValueError("end must be after start")
+
+    cal = icalendar.Calendar()
+    cal.add("prodid", "-//personal-assistant-mcp//calendar//EN")
+    cal.add("version", "2.0")
+
+    event = icalendar.Event()
+    event.add("uid", safe_uid)
+    event.add("summary", clean_summary)
+    event.add("dtstart", dtstart)
+    event.add("dtend", dtend)
+    event.add("dtstamp", datetime.now(timezone.utc))
+    if description is not None:
+        event.add("description", description)
+    if location is not None:
+        event.add("location", location)
+
+    cal.add_component(event)
+    return cal.to_ical()
 
 
 async def list_calendars(
@@ -193,4 +258,126 @@ async def fetch_events(
     return events
 
 
-__all__ = ["CalDAVConfig", "fetch_events", "list_calendars"]
+async def create_event(
+    config: CalDAVConfig,
+    *,
+    calendar_slug: str,
+    summary: str,
+    start: str,
+    end: str,
+    uid: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Create a CalDAV event resource without overwriting an existing UID."""
+    event_uid = _validate_path_segment(uid or uuid.uuid4().hex, "uid")
+    href = _event_href(config, calendar_slug, event_uid)
+    body = _build_event_ical(
+        uid=event_uid,
+        summary=summary,
+        start=start,
+        end=end,
+        description=description,
+        location=location,
+    )
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    try:
+        response = await client.put(
+            href,
+            content=body,
+            headers={
+                "Authorization": _auth_header(config),
+                "Content-Type": "text/calendar; charset=utf-8",
+                "If-None-Match": "*",
+            },
+        )
+        response.raise_for_status()
+    finally:
+        if own_client:
+            await client.aclose()
+
+    return {"uid": event_uid, "href": href, "created": True}
+
+
+async def update_event(
+    config: CalDAVConfig,
+    *,
+    calendar_slug: str,
+    uid: str,
+    summary: str,
+    start: str,
+    end: str,
+    description: str | None = None,
+    location: str | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Replace a CalDAV event resource by UID."""
+    event_uid = _validate_path_segment(uid, "uid")
+    href = _event_href(config, calendar_slug, event_uid)
+    body = _build_event_ical(
+        uid=event_uid,
+        summary=summary,
+        start=start,
+        end=end,
+        description=description,
+        location=location,
+    )
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    try:
+        response = await client.put(
+            href,
+            content=body,
+            headers={
+                "Authorization": _auth_header(config),
+                "Content-Type": "text/calendar; charset=utf-8",
+            },
+        )
+        response.raise_for_status()
+    finally:
+        if own_client:
+            await client.aclose()
+
+    return {"uid": event_uid, "href": href, "updated": True}
+
+
+async def delete_event(
+    config: CalDAVConfig,
+    *,
+    calendar_slug: str,
+    uid: str,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Delete a CalDAV event resource by UID."""
+    event_uid = _validate_path_segment(uid, "uid")
+    href = _event_href(config, calendar_slug, event_uid)
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    try:
+        response = await client.delete(
+            href,
+            headers={
+                "Authorization": _auth_header(config),
+            },
+        )
+        response.raise_for_status()
+    finally:
+        if own_client:
+            await client.aclose()
+
+    return {"uid": event_uid, "href": href, "deleted": True}
+
+
+__all__ = [
+    "CalDAVConfig",
+    "create_event",
+    "delete_event",
+    "fetch_events",
+    "list_calendars",
+    "update_event",
+]

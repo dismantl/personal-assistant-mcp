@@ -82,6 +82,14 @@ for local MCP clients or authenticated streamable HTTP for hosted use.
 | `calendar_list` | List active CalDAV calendars. |
 | `calendar_today` | Fetch events for the next 24 hours in the configured vault timezone. |
 | `calendar_week` | Fetch events for the next seven days in the configured vault timezone. |
+| `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes. |
+| `calendar_update_event` | Replace an event by calendar slug and UID from timezone-aware ISO start/end datetimes. |
+| `calendar_delete_event` | Delete an event by calendar slug and UID. |
+
+Calendar mutation tools use the `slug` returned by `calendar_list` as
+`calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
+`If-None-Match: *` to avoid overwriting existing events. `calendar_update_event`
+performs a full resource replacement for the supplied UID.
 
 ### Proton mail
 
