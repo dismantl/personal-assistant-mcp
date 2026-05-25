@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 import httpx
@@ -134,6 +135,28 @@ END:VCALENDAR
 
 _REPORT_EMPTY_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" />
+"""
+
+_REPORT_COMPLEX_UID_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/complex-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:2026/05/11:event_123@example.com
+SUMMARY:Existing event
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
 """
 
 
@@ -371,6 +394,33 @@ async def test_create_event_serializes_offset_datetimes_as_utc() -> None:
 
 
 @respx.mock
+async def test_create_event_accepts_non_path_uid_with_safe_resource_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID("12345678-1234-5678-1234-567812345678"))
+    route = respx.put("https://cal.example/dav/personal/12345678123456781234567812345678.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    result = await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="2026/05/11:event_123@example.com",
+        summary="Dentist",
+        start="2026-05-11T10:00:00-04:00",
+        end="2026-05-11T11:00:00-04:00",
+    )
+
+    assert result == {
+        "uid": "2026/05/11:event_123@example.com",
+        "href": "https://cal.example/dav/personal/12345678123456781234567812345678.ics",
+        "created": True,
+    }
+    body = route.calls.last.request.content.decode()
+    assert "UID:2026/05/11:event_123@example.com" in body
+
+
+@respx.mock
 async def test_update_event_replaces_ical_calendar_resource() -> None:
     respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
         return_value=httpx.Response(207, text=_REPORT_EVENT_XML)
@@ -399,6 +449,33 @@ async def test_update_event_replaces_ical_calendar_resource() -> None:
     assert "SUMMARY:Dentist moved" in body
     assert "DTSTART:20260511T160000Z" in body
     assert "DTEND:20260511T170000Z" in body
+
+
+@respx.mock
+async def test_update_event_accepts_non_path_uid() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_COMPLEX_UID_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/complex-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="2026/05/11:event_123@example.com",
+        summary="Dentist moved",
+        start="2026-05-11T16:00:00+00:00",
+        end="2026-05-11T17:00:00+00:00",
+    )
+
+    assert result == {
+        "uid": "2026/05/11:event_123@example.com",
+        "href": "https://cal.example/dav/personal/complex-resource.ics",
+        "updated": True,
+    }
+    body = route.calls.last.request.content.decode()
+    assert "UID:2026/05/11:event_123@example.com" in body
 
 
 @respx.mock
@@ -440,6 +517,29 @@ async def test_delete_event_deletes_calendar_resource() -> None:
     assert request.headers["If-Match"] == "*"
 
 
+@respx.mock
+async def test_delete_event_accepts_non_path_uid() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_COMPLEX_UID_XML)
+    )
+    route = respx.delete("https://cal.example/dav/personal/complex-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await delete_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="2026/05/11:event_123@example.com",
+    )
+
+    assert result == {
+        "uid": "2026/05/11:event_123@example.com",
+        "href": "https://cal.example/dav/personal/complex-resource.ics",
+        "deleted": True,
+    }
+    assert route.calls.last.request.headers["If-Match"] == "*"
+
+
 async def test_create_event_rejects_end_before_start() -> None:
     with pytest.raises(ValueError, match="end"):
         await create_event(
@@ -452,9 +552,9 @@ async def test_create_event_rejects_end_before_start() -> None:
         )
 
 
-async def test_delete_event_rejects_unsafe_uid() -> None:
+async def test_delete_event_rejects_control_chars_in_uid() -> None:
     with pytest.raises(ValueError, match="uid"):
-        await delete_event(_CONFIG, calendar_slug="personal", uid="../event-123")
+        await delete_event(_CONFIG, calendar_slug="personal", uid="event\r\n123")
 
 
 async def test_delete_event_rejects_dotdot_calendar_slug() -> None:

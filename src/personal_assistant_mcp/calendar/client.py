@@ -118,6 +118,13 @@ def _validate_path_segment(value: str, field_name: str) -> str:
     return stripped
 
 
+def _validate_uid_text(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped or any(char in stripped for char in "\x00\r\n"):
+        raise ValueError(f"{field_name} must be a non-empty iCalendar UID")
+    return stripped
+
+
 def _calendar_collection_href(config: CalDAVConfig, calendar_slug: str) -> str:
     safe_calendar = _validate_path_segment(calendar_slug, "calendar_slug")
     return f"{config.base_url.rstrip('/')}/{safe_calendar}/"
@@ -126,6 +133,13 @@ def _calendar_collection_href(config: CalDAVConfig, calendar_slug: str) -> str:
 def _event_href(config: CalDAVConfig, calendar_slug: str, uid: str) -> str:
     safe_uid = _validate_path_segment(uid, "uid")
     return urljoin(_calendar_collection_href(config, calendar_slug), f"{safe_uid}.ics")
+
+
+def _resource_id_for_uid(uid: str) -> str:
+    try:
+        return _validate_path_segment(uid, "uid")
+    except ValueError:
+        return uuid.uuid4().hex
 
 
 def _event_uid_report_body(uid: str) -> str:
@@ -162,7 +176,7 @@ async def _find_event_href_by_uid(
     *,
     client: httpx.AsyncClient,
 ) -> str | None:
-    safe_uid = _validate_path_segment(uid, "uid")
+    safe_uid = _validate_uid_text(uid, "uid")
     collection_href = _calendar_collection_href(config, calendar_slug)
     response = await client.request(
         "REPORT",
@@ -196,7 +210,7 @@ def _build_event_ical(
     description: str | None = None,
     location: str | None = None,
 ) -> bytes:
-    safe_uid = _validate_path_segment(uid, "uid")
+    safe_uid = _validate_uid_text(uid, "uid")
     clean_summary = summary.strip()
     if not clean_summary:
         raise ValueError("summary must not be empty")
@@ -336,7 +350,8 @@ async def create_event(
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
-    event_uid = _validate_path_segment(uid or uuid.uuid4().hex, "uid")
+    event_uid = _validate_uid_text(uid, "uid") if uid is not None else uuid.uuid4().hex
+    resource_id = _resource_id_for_uid(event_uid)
     body = _build_event_ical(
         uid=event_uid,
         summary=summary,
@@ -349,7 +364,7 @@ async def create_event(
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
-        href = _event_href(config, calendar_slug, event_uid)
+        href = _event_href(config, calendar_slug, resource_id)
         response = await client.put(
             href,
             content=body,
@@ -380,7 +395,7 @@ async def update_event(
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Replace a CalDAV event resource by UID."""
-    event_uid = _validate_path_segment(uid, "uid")
+    event_uid = _validate_uid_text(uid, "uid")
     body = _build_event_ical(
         uid=event_uid,
         summary=summary,
@@ -421,7 +436,7 @@ async def delete_event(
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Delete a CalDAV event resource by UID."""
-    event_uid = _validate_path_segment(uid, "uid")
+    event_uid = _validate_uid_text(uid, "uid")
 
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
