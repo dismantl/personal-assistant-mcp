@@ -21,6 +21,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urljoin
+from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
 
 import defusedxml.ElementTree as ET  # noqa: N817 - defused stdlib-compatible alias
@@ -111,15 +113,78 @@ def _parse_iso_datetime(value: str, field_name: str) -> datetime:
 
 def _validate_path_segment(value: str, field_name: str) -> str:
     stripped = value.strip()
-    if not stripped or not _SAFE_PATH_SEGMENT.fullmatch(stripped):
+    if not stripped or stripped in {".", ".."} or not _SAFE_PATH_SEGMENT.fullmatch(stripped):
         raise ValueError(f"{field_name} must be a safe CalDAV path segment")
     return stripped
 
 
-def _event_href(config: CalDAVConfig, calendar_slug: str, uid: str) -> str:
+def _calendar_collection_href(config: CalDAVConfig, calendar_slug: str) -> str:
     safe_calendar = _validate_path_segment(calendar_slug, "calendar_slug")
+    return f"{config.base_url.rstrip('/')}/{safe_calendar}/"
+
+
+def _event_href(config: CalDAVConfig, calendar_slug: str, uid: str) -> str:
     safe_uid = _validate_path_segment(uid, "uid")
-    return f"{config.base_url.rstrip('/')}/{safe_calendar}/{safe_uid}.ics"
+    return urljoin(_calendar_collection_href(config, calendar_slug), f"{safe_uid}.ics")
+
+
+def _event_uid_report_body(uid: str) -> str:
+    safe_uid = xml_escape(uid)
+    return (
+        '<?xml version="1.0"?>\n'
+        '<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">\n'
+        "  <d:prop><d:getetag/><c:calendar-data/></d:prop>\n"
+        "  <c:filter>\n"
+        '    <c:comp-filter name="VCALENDAR">\n'
+        '      <c:comp-filter name="VEVENT">\n'
+        '        <c:prop-filter name="UID">\n'
+        f'          <c:text-match collation="i;octet">{safe_uid}</c:text-match>\n'
+        "        </c:prop-filter>\n"
+        "      </c:comp-filter>\n"
+        "    </c:comp-filter>\n"
+        "  </c:filter>\n"
+        "</c:calendar-query>"
+    )
+
+
+def _calendar_data_has_uid(calendar_data: str, uid: str) -> bool:
+    try:
+        calendar = icalendar.Calendar.from_ical(calendar_data)
+    except ValueError:
+        return False
+    return any(str(component.get("UID", "")) == uid for component in calendar.walk("VEVENT"))
+
+
+async def _find_event_href_by_uid(
+    config: CalDAVConfig,
+    calendar_slug: str,
+    uid: str,
+    *,
+    client: httpx.AsyncClient,
+) -> str | None:
+    safe_uid = _validate_path_segment(uid, "uid")
+    collection_href = _calendar_collection_href(config, calendar_slug)
+    response = await client.request(
+        "REPORT",
+        collection_href,
+        content=_event_uid_report_body(safe_uid),
+        headers={
+            "Authorization": _auth_header(config),
+            "Content-Type": "application/xml",
+            "Depth": "1",
+        },
+    )
+    response.raise_for_status()
+
+    for elem in ET.fromstring(response.text).findall(".//d:response", _XML_NS):
+        href = elem.findtext("d:href", "", _XML_NS) or ""
+        calendar_data = elem.findtext(".//c:calendar-data", "", _XML_NS) or ""
+        if not href or not _calendar_data_has_uid(calendar_data, safe_uid):
+            continue
+        absolute_href = urljoin(collection_href, href)
+        if absolute_href.startswith(collection_href):
+            return absolute_href
+    return None
 
 
 def _build_event_ical(
@@ -136,8 +201,8 @@ def _build_event_ical(
     if not clean_summary:
         raise ValueError("summary must not be empty")
 
-    dtstart = _parse_iso_datetime(start, "start")
-    dtend = _parse_iso_datetime(end, "end")
+    dtstart = _parse_iso_datetime(start, "start").astimezone(timezone.utc)
+    dtend = _parse_iso_datetime(end, "end").astimezone(timezone.utc)
     if dtend <= dtstart:
         raise ValueError("end must be after start")
 
@@ -272,7 +337,6 @@ async def create_event(
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
     event_uid = _validate_path_segment(uid or uuid.uuid4().hex, "uid")
-    href = _event_href(config, calendar_slug, event_uid)
     body = _build_event_ical(
         uid=event_uid,
         summary=summary,
@@ -285,6 +349,7 @@ async def create_event(
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
+        href = _event_href(config, calendar_slug, event_uid)
         response = await client.put(
             href,
             content=body,
@@ -316,7 +381,6 @@ async def update_event(
 ) -> dict[str, Any]:
     """Replace a CalDAV event resource by UID."""
     event_uid = _validate_path_segment(uid, "uid")
-    href = _event_href(config, calendar_slug, event_uid)
     body = _build_event_ical(
         uid=event_uid,
         summary=summary,
@@ -329,12 +393,16 @@ async def update_event(
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
+        href = await _find_event_href_by_uid(config, calendar_slug, event_uid, client=client)
+        if href is None:
+            return {"error": f"Event not found: {event_uid}", "uid": event_uid}
         response = await client.put(
             href,
             content=body,
             headers={
                 "Authorization": _auth_header(config),
                 "Content-Type": "text/calendar; charset=utf-8",
+                "If-Match": "*",
             },
         )
         response.raise_for_status()
@@ -354,15 +422,18 @@ async def delete_event(
 ) -> dict[str, Any]:
     """Delete a CalDAV event resource by UID."""
     event_uid = _validate_path_segment(uid, "uid")
-    href = _event_href(config, calendar_slug, event_uid)
 
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
+        href = await _find_event_href_by_uid(config, calendar_slug, event_uid, client=client)
+        if href is None:
+            return {"error": f"Event not found: {event_uid}", "uid": event_uid}
         response = await client.delete(
             href,
             headers={
                 "Authorization": _auth_header(config),
+                "If-Match": "*",
             },
         )
         response.raise_for_status()
