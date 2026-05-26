@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urljoin
 from xml.sax.saxutils import escape as xml_escape
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import defusedxml.ElementTree as ET  # noqa: N817 - defused stdlib-compatible alias
 import httpx
@@ -43,6 +43,7 @@ _PROPFIND_BODY = (
     "</d:propfind>"
 )
 _SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~@-]+$")
+_DISPLAY_TZ_SUFFIX = re.compile(r"^(?P<value>.+) \((?P<tz>[^)]+)\)$")
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,12 @@ class CalDAVConfig:
             password=_required("CALDAV_PASSWORD"),
             timezone_name=os.environ.get("CALDAV_TIMEZONE", _DEFAULT_TZ) or _DEFAULT_TZ,
         )
+
+
+@dataclass(frozen=True)
+class _EventResource:
+    href: str
+    calendar_data: str
 
 
 def _required(name: str) -> str:
@@ -101,13 +108,21 @@ def _window(
 
 
 def _parse_iso_datetime(value: str, field_name: str) -> datetime:
-    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    match = _DISPLAY_TZ_SUFFIX.fullmatch(value)
+    timezone_name = match["tz"] if match else None
+    raw_value = match["value"] if match else value
+    normalized = raw_value[:-1] + "+00:00" if raw_value.endswith("Z") else raw_value
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise ValueError(f"{field_name} must be an ISO 8601 datetime string") from exc
     if parsed.tzinfo is None:
         raise ValueError(f"{field_name} must include a timezone offset")
+    if timezone_name is not None:
+        try:
+            parsed = parsed.astimezone(ZoneInfo(timezone_name))
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"{field_name} has an unknown timezone suffix") from exc
     return parsed
 
 
@@ -169,13 +184,13 @@ def _calendar_data_has_uid(calendar_data: str, uid: str) -> bool:
     return any(str(component.get("UID", "")) == uid for component in calendar.walk("VEVENT"))
 
 
-async def _find_event_href_by_uid(
+async def _find_event_resource_by_uid(
     config: CalDAVConfig,
     calendar_slug: str,
     uid: str,
     *,
     client: httpx.AsyncClient,
-) -> str | None:
+) -> _EventResource | None:
     safe_uid = _validate_uid_text(uid, "uid")
     collection_href = _calendar_collection_href(config, calendar_slug)
     response = await client.request(
@@ -197,8 +212,54 @@ async def _find_event_href_by_uid(
             continue
         absolute_href = urljoin(collection_href, href)
         if absolute_href.startswith(collection_href):
-            return absolute_href
+            return _EventResource(href=absolute_href, calendar_data=calendar_data)
     return None
+
+
+async def _find_event_href_by_uid(
+    config: CalDAVConfig,
+    calendar_slug: str,
+    uid: str,
+    *,
+    client: httpx.AsyncClient,
+) -> str | None:
+    resource = await _find_event_resource_by_uid(config, calendar_slug, uid, client=client)
+    return resource.href if resource is not None else None
+
+
+def _build_event_component(
+    *,
+    uid: str,
+    summary: str,
+    start: str,
+    end: str,
+    recurrence_id: datetime | None = None,
+    description: str | None = None,
+    location: str | None = None,
+) -> icalendar.Event:
+    safe_uid = _validate_uid_text(uid, "uid")
+    clean_summary = summary.strip()
+    if not clean_summary:
+        raise ValueError("summary must not be empty")
+
+    dtstart = _parse_iso_datetime(start, "start").astimezone(timezone.utc)
+    dtend = _parse_iso_datetime(end, "end").astimezone(timezone.utc)
+    if dtend <= dtstart:
+        raise ValueError("end must be after start")
+
+    event = icalendar.Event()
+    event.add("uid", safe_uid)
+    event.add("summary", clean_summary)
+    event.add("dtstart", dtstart)
+    event.add("dtend", dtend)
+    event.add("dtstamp", datetime.now(timezone.utc))
+    if recurrence_id is not None:
+        event.add("recurrence-id", recurrence_id)
+    if description is not None:
+        event.add("description", description)
+    if location is not None:
+        event.add("location", location)
+    return event
 
 
 def _build_event_ical(
@@ -210,33 +271,118 @@ def _build_event_ical(
     description: str | None = None,
     location: str | None = None,
 ) -> bytes:
-    safe_uid = _validate_uid_text(uid, "uid")
-    clean_summary = summary.strip()
-    if not clean_summary:
-        raise ValueError("summary must not be empty")
-
-    dtstart = _parse_iso_datetime(start, "start").astimezone(timezone.utc)
-    dtend = _parse_iso_datetime(end, "end").astimezone(timezone.utc)
-    if dtend <= dtstart:
-        raise ValueError("end must be after start")
-
     cal = icalendar.Calendar()
     cal.add("prodid", "-//personal-assistant-mcp//calendar//EN")
     cal.add("version", "2.0")
-
-    event = icalendar.Event()
-    event.add("uid", safe_uid)
-    event.add("summary", clean_summary)
-    event.add("dtstart", dtstart)
-    event.add("dtend", dtend)
-    event.add("dtstamp", datetime.now(timezone.utc))
-    if description is not None:
-        event.add("description", description)
-    if location is not None:
-        event.add("location", location)
-
-    cal.add_component(event)
+    cal.add_component(
+        _build_event_component(
+            uid=uid,
+            summary=summary,
+            start=start,
+            end=end,
+            description=description,
+            location=location,
+        )
+    )
     return cal.to_ical()
+
+
+def _same_ical_value(left: Any, right: Any) -> bool:
+    if isinstance(left, datetime) and isinstance(right, datetime):
+        if left.tzinfo is not None and right.tzinfo is not None:
+            return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
+    return left == right
+
+
+def _component_values(component: icalendar.Event, prop_name: str) -> list[Any]:
+    values = component.get(prop_name)
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        values = [values]
+
+    parsed: list[Any] = []
+    for value in values:
+        if hasattr(value, "dts"):
+            parsed.extend(item.dt for item in value.dts)
+        elif hasattr(value, "dt"):
+            parsed.append(value.dt)
+        else:
+            parsed.append(value)
+    return parsed
+
+
+def _recurrence_id_matches(component: icalendar.Event, recurrence_id: datetime) -> bool:
+    existing = component.get("RECURRENCE-ID")
+    return existing is not None and _same_ical_value(existing.dt, recurrence_id)
+
+
+def _find_master_event(calendar: icalendar.Calendar, uid: str) -> icalendar.Event | None:
+    for component in calendar.walk("VEVENT"):
+        if str(component.get("UID", "")) == uid and component.get("RECURRENCE-ID") is None:
+            return component
+    return None
+
+
+def _remove_recurrence_override(
+    calendar: icalendar.Calendar, uid: str, recurrence_id: datetime
+) -> None:
+    calendar.subcomponents = [
+        component
+        for component in calendar.subcomponents
+        if not (
+            getattr(component, "name", "") == "VEVENT"
+            and str(component.get("UID", "")) == uid
+            and _recurrence_id_matches(component, recurrence_id)
+        )
+    ]
+
+
+def _build_recurring_instance_update_ical(
+    calendar_data: str,
+    *,
+    uid: str,
+    recurrence_id: datetime,
+    summary: str,
+    start: str,
+    end: str,
+    description: str | None = None,
+    location: str | None = None,
+) -> bytes | None:
+    calendar = icalendar.Calendar.from_ical(calendar_data)
+    if _find_master_event(calendar, uid) is None:
+        return None
+
+    _remove_recurrence_override(calendar, uid, recurrence_id)
+    calendar.add_component(
+        _build_event_component(
+            uid=uid,
+            recurrence_id=recurrence_id,
+            summary=summary,
+            start=start,
+            end=end,
+            description=description,
+            location=location,
+        )
+    )
+    return calendar.to_ical()
+
+
+def _build_recurring_instance_delete_ical(
+    calendar_data: str, *, uid: str, recurrence_id: datetime
+) -> bytes | None:
+    calendar = icalendar.Calendar.from_ical(calendar_data)
+    master = _find_master_event(calendar, uid)
+    if master is None:
+        return None
+
+    _remove_recurrence_override(calendar, uid, recurrence_id)
+    has_exdate = any(
+        _same_ical_value(value, recurrence_id) for value in _component_values(master, "EXDATE")
+    )
+    if not has_exdate:
+        master.add("exdate", recurrence_id)
+    return calendar.to_ical()
 
 
 async def list_calendars(
@@ -325,6 +471,8 @@ async def fetch_events(
                     row["start"] = _format_ical_value(dtstart.dt)
                 if (dtend := event.get("DTEND")) is not None:
                     row["end"] = _format_ical_value(dtend.dt)
+                if (recurrence_id := event.get("RECURRENCE-ID")) is not None:
+                    row["recurrence_id"] = _format_ical_value(recurrence_id.dt)
                 if (location := event.get("LOCATION")) is not None:
                     row["location"] = str(location)
                 if (description := event.get("DESCRIPTION")) is not None:
@@ -403,29 +551,56 @@ async def update_event(
     summary: str,
     start: str,
     end: str,
+    recurrence_id: str | None = None,
     description: str | None = None,
     location: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Replace a CalDAV event resource by UID."""
+    """Replace a CalDAV event resource or one recurrence instance by UID."""
     event_uid = _validate_uid_text(uid, "uid")
-    body = _build_event_ical(
-        uid=event_uid,
-        summary=summary,
-        start=start,
-        end=end,
-        description=description,
-        location=location,
+    recurrence_dt = (
+        _parse_iso_datetime(recurrence_id, "recurrence_id") if recurrence_id is not None else None
     )
+    recurrence_text = _format_ical_value(recurrence_dt) if recurrence_dt is not None else None
 
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
-        href = await _find_event_href_by_uid(config, calendar_slug, event_uid, client=client)
-        if href is None:
+        resource = await _find_event_resource_by_uid(
+            config, calendar_slug, event_uid, client=client
+        )
+        if resource is None:
             return {"error": f"Event not found: {event_uid}", "uid": event_uid}
+
+        if recurrence_dt is None:
+            body = _build_event_ical(
+                uid=event_uid,
+                summary=summary,
+                start=start,
+                end=end,
+                description=description,
+                location=location,
+            )
+        else:
+            body = _build_recurring_instance_update_ical(
+                resource.calendar_data,
+                uid=event_uid,
+                recurrence_id=recurrence_dt,
+                summary=summary,
+                start=start,
+                end=end,
+                description=description,
+                location=location,
+            )
+            if body is None:
+                return {
+                    "error": f"Recurring event not found: {event_uid}",
+                    "uid": event_uid,
+                    "recurrence_id": recurrence_text,
+                }
+
         response = await client.put(
-            href,
+            resource.href,
             content=body,
             headers={
                 "Authorization": _auth_header(config),
@@ -438,7 +613,10 @@ async def update_event(
         if own_client:
             await client.aclose()
 
-    return {"uid": event_uid, "href": href, "updated": True}
+    result: dict[str, Any] = {"uid": event_uid, "href": resource.href, "updated": True}
+    if recurrence_text is not None:
+        result["recurrence_id"] = recurrence_text
+    return result
 
 
 async def delete_event(
@@ -446,30 +624,61 @@ async def delete_event(
     *,
     calendar_slug: str,
     uid: str,
+    recurrence_id: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Delete a CalDAV event resource by UID."""
+    """Delete a CalDAV event resource or one recurrence instance by UID."""
     event_uid = _validate_uid_text(uid, "uid")
+    recurrence_dt = (
+        _parse_iso_datetime(recurrence_id, "recurrence_id") if recurrence_id is not None else None
+    )
+    recurrence_text = _format_ical_value(recurrence_dt) if recurrence_dt is not None else None
 
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
-        href = await _find_event_href_by_uid(config, calendar_slug, event_uid, client=client)
-        if href is None:
-            return {"error": f"Event not found: {event_uid}", "uid": event_uid}
-        response = await client.delete(
-            href,
-            headers={
-                "Authorization": _auth_header(config),
-                "If-Match": "*",
-            },
+        resource = await _find_event_resource_by_uid(
+            config, calendar_slug, event_uid, client=client
         )
+        if resource is None:
+            return {"error": f"Event not found: {event_uid}", "uid": event_uid}
+
+        if recurrence_dt is None:
+            response = await client.delete(
+                resource.href,
+                headers={
+                    "Authorization": _auth_header(config),
+                    "If-Match": "*",
+                },
+            )
+        else:
+            body = _build_recurring_instance_delete_ical(
+                resource.calendar_data, uid=event_uid, recurrence_id=recurrence_dt
+            )
+            if body is None:
+                return {
+                    "error": f"Recurring event not found: {event_uid}",
+                    "uid": event_uid,
+                    "recurrence_id": recurrence_text,
+                }
+            response = await client.put(
+                resource.href,
+                content=body,
+                headers={
+                    "Authorization": _auth_header(config),
+                    "Content-Type": "text/calendar; charset=utf-8",
+                    "If-Match": "*",
+                },
+            )
         response.raise_for_status()
     finally:
         if own_client:
             await client.aclose()
 
-    return {"uid": event_uid, "href": href, "deleted": True}
+    result = {"uid": event_uid, "href": resource.href, "deleted": True}
+    if recurrence_text is not None:
+        result["recurrence_id"] = recurrence_text
+    return result
 
 
 __all__ = [
