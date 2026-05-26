@@ -57,10 +57,11 @@ def register(mcp: Any) -> None:
         summary: str,
         start: str,
         end: str,
+        recurrence_id: str | None = None,
         description: str | None = None,
         location: str | None = None,
     ) -> dict[str, Any]:
-        """Replace a CalDAV event resource by UID using ISO datetimes."""
+        """Replace a CalDAV event or recurrence instance using ISO datetimes."""
         return await caldav.update_event(
             caldav.CalDAVConfig.from_env(),
             calendar_slug=calendar_slug,
@@ -68,17 +69,21 @@ def register(mcp: Any) -> None:
             summary=summary,
             start=start,
             end=end,
+            recurrence_id=recurrence_id,
             description=description,
             location=location,
         )
 
     @mcp.tool()
-    async def calendar_delete_event(calendar_slug: str, uid: str) -> dict[str, Any]:
-        """Delete a CalDAV event resource by calendar slug and UID."""
+    async def calendar_delete_event(
+        calendar_slug: str, uid: str, recurrence_id: str | None = None
+    ) -> dict[str, Any]:
+        """Delete a CalDAV event or recurrence instance by calendar slug and UID."""
         return await caldav.delete_event(
             caldav.CalDAVConfig.from_env(),
             calendar_slug=calendar_slug,
             uid=uid,
+            recurrence_id=recurrence_id,
         )
 
 

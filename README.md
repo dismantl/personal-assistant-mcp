@@ -83,15 +83,22 @@ for local MCP clients or authenticated streamable HTTP for hosted use.
 | `calendar_today` | Fetch events for the next 24 hours in the configured vault timezone. |
 | `calendar_week` | Fetch events for the next seven days in the configured vault timezone. |
 | `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes. |
-| `calendar_update_event` | Replace an event by calendar slug and UID from timezone-aware ISO start/end datetimes. |
-| `calendar_delete_event` | Delete an event by calendar slug and UID. |
+| `calendar_update_event` | Replace an event, or one recurring instance when `recurrence_id` is supplied, from timezone-aware ISO datetimes. |
+| `calendar_delete_event` | Delete an event, or one recurring instance when `recurrence_id` is supplied. |
+
+`calendar_today` and `calendar_week` include each event's iCalendar `uid` and
+`calendar_slug`, plus `recurrence_id` for recurring instances, so listed events
+can be passed directly to the update/delete tools.
 
 Calendar mutation tools use the `slug` returned by `calendar_list` as
 `calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
 `If-None-Match: *` to avoid overwriting existing events. When a UID is supplied,
 `calendar_create_event` first checks whether that iCalendar UID already exists.
 `calendar_update_event` performs a full resource replacement for the supplied
-iCalendar UID, which does not need to match the CalDAV resource filename.
+iCalendar UID, which does not need to match the CalDAV resource filename. To
+mutate a single recurring instance instead of the whole series, pass both `uid`
+and that listed instance's `recurrence_id`; updates write an iCalendar override
+and deletes add an exception date.
 
 ### Proton mail
 
