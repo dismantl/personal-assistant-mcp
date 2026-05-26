@@ -799,6 +799,98 @@ async def test_update_event_accepts_all_day_recurrence_id() -> None:
 
 
 @respx.mock
+async def test_update_event_accepts_tzid_recurrence_id_from_listed_event() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    local_recurring_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VTIMEZONE
+TZID:America/New_York
+BEGIN:DAYLIGHT
+TZOFFSETFROM:-0500
+TZOFFSETTO:-0400
+TZNAME:EDT
+DTSTART:19700308T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:-0400
+TZOFFSETTO:-0500
+TZNAME:EST
+DTSTART:19701101T020000
+RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:local-recurring-123
+SUMMARY:Local recurring
+DTSTART;TZID=America/New_York:20260511T100000
+DTEND;TZID=America/New_York:20260511T110000
+RRULE:FREQ=DAILY;COUNT=2
+END:VEVENT
+END:VCALENDAR
+"""
+    report_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/local-recurring-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[{local_recurring_ical}]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=local_recurring_ical)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text="BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+    )
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=report_xml)
+    )
+    route = respx.put("https://cal.example/dav/personal/local-recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    events = await fetch_events(_CONFIG, "week", now=_FIXED_NOW)
+    recurrence_id = next(
+        event["recurrence_id"]
+        for event in events
+        if event["uid"] == "local-recurring-123" and event["summary"] == "Local recurring"
+    )
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="local-recurring-123",
+        recurrence_id=recurrence_id,
+        summary="Moved local recurring",
+        start="2026-05-11T16:00:00+00:00",
+        end="2026-05-11T17:00:00+00:00",
+    )
+
+    assert recurrence_id == "2026-05-11T10:00:00-04:00 (America/New_York)"
+    assert result == {
+        "uid": "local-recurring-123",
+        "recurrence_id": recurrence_id,
+        "href": "https://cal.example/dav/personal/local-recurring-resource.ics",
+        "updated": True,
+    }
+    override = next(
+        event
+        for event in _vevents_from_body(route.calls.last.request.content.decode())
+        if event.get("RECURRENCE-ID") is not None
+    )
+    assert override.get("RECURRENCE-ID").dt.isoformat() == "2026-05-11T10:00:00-04:00"
+    assert str(override.get("RECURRENCE-ID").dt.tzinfo) == "America/New_York"
+    assert str(override.get("SUMMARY")) == "Moved local recurring"
+
+
+@respx.mock
 async def test_update_event_returns_error_when_uid_missing() -> None:
     respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
         return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
