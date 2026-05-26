@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 import icalendar
@@ -215,6 +215,61 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_ALL_DAY_RECURRING_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/all-day-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:all-day-123
+SUMMARY:Daily all-day
+DTSTART;VALUE=DATE:20260511
+DTEND;VALUE=DATE:20260512
+RRULE:FREQ=DAILY;COUNT=3
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
+_REPORT_ALL_DAY_RECURRING_OVERRIDE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/all-day-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:all-day-123
+SUMMARY:Daily all-day
+DTSTART;VALUE=DATE:20260511
+DTEND;VALUE=DATE:20260512
+RRULE:FREQ=DAILY;COUNT=3
+END:VEVENT
+BEGIN:VEVENT
+UID:all-day-123
+RECURRENCE-ID;VALUE=DATE:20260512
+SUMMARY:Moved all-day
+DTSTART:20260512T160000Z
+DTEND:20260512T170000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 
 def _vevents_from_body(body: str) -> list[icalendar.Event]:
     calendar = icalendar.Calendar.from_ical(body)
@@ -364,6 +419,39 @@ END:VCALENDAR
     assert [event["recurrence_id"] for event in standups] == [
         "2026-05-11T14:00:00+00:00",
         "2026-05-12T14:00:00+00:00",
+    ]
+
+
+@respx.mock
+async def test_fetch_events_exposes_date_recurrence_id_for_all_day_instances() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    recurring_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:all-day-123
+SUMMARY:Daily all-day
+DTSTART;VALUE=DATE:20260511
+DTEND;VALUE=DATE:20260512
+RRULE:FREQ=DAILY;COUNT=2
+END:VEVENT
+END:VCALENDAR
+"""
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=recurring_ical)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text="BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+    )
+
+    events = await fetch_events(_CONFIG, "week", now=_FIXED_NOW)
+
+    all_day_events = [event for event in events if event["uid"] == "all-day-123"]
+    assert [event["recurrence_id"] for event in all_day_events] == [
+        "2026-05-11",
+        "2026-05-12",
     ]
 
 
@@ -680,6 +768,37 @@ async def test_update_event_updates_one_recurring_instance() -> None:
 
 
 @respx.mock
+async def test_update_event_accepts_all_day_recurrence_id() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_ALL_DAY_RECURRING_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/all-day-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="all-day-123",
+        recurrence_id="2026-05-12",
+        summary="Moved all-day",
+        start="2026-05-12T16:00:00+00:00",
+        end="2026-05-12T17:00:00+00:00",
+    )
+
+    assert result == {
+        "uid": "all-day-123",
+        "recurrence_id": "2026-05-12",
+        "href": "https://cal.example/dav/personal/all-day-resource.ics",
+        "updated": True,
+    }
+    events = _vevents_from_body(route.calls.last.request.content.decode())
+    override = next(event for event in events if event.get("RECURRENCE-ID") is not None)
+    assert override.get("RECURRENCE-ID").dt == date(2026, 5, 12)
+    assert str(override.get("SUMMARY")) == "Moved all-day"
+
+
+@respx.mock
 async def test_update_event_returns_error_when_uid_missing() -> None:
     respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
         return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
@@ -774,6 +893,37 @@ async def test_delete_event_deletes_one_recurring_instance() -> None:
     master = events[0]
     assert str(master.get("UID")) == "recurring-123"
     assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc)
+
+
+@respx.mock
+async def test_delete_event_accepts_all_day_recurrence_id() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_ALL_DAY_RECURRING_OVERRIDE_XML)
+    )
+    put_route = respx.put("https://cal.example/dav/personal/all-day-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+    delete_route = respx.delete("https://cal.example/dav/personal/all-day-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await delete_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="all-day-123",
+        recurrence_id="2026-05-12",
+    )
+
+    assert result == {
+        "uid": "all-day-123",
+        "recurrence_id": "2026-05-12",
+        "href": "https://cal.example/dav/personal/all-day-resource.ics",
+        "deleted": True,
+    }
+    assert not delete_route.called
+    events = _vevents_from_body(put_route.calls.last.request.content.decode())
+    assert len(events) == 1
+    assert events[0].get("EXDATE").dts[0].dt == date(2026, 5, 12)
 
 
 async def test_create_event_rejects_end_before_start() -> None:
