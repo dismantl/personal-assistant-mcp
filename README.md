@@ -86,6 +86,10 @@ for local MCP clients or authenticated streamable HTTP for hosted use.
 | `calendar_update_event` | Replace an event by calendar slug and UID from timezone-aware ISO start/end datetimes. |
 | `calendar_delete_event` | Delete an event by calendar slug and UID. |
 
+`calendar_today` and `calendar_week` include each event's iCalendar `uid` and
+`calendar_slug`, so listed events can be passed directly to the update/delete
+tools.
+
 Calendar mutation tools use the `slug` returned by `calendar_list` as
 `calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
 `If-None-Match: *` to avoid overwriting existing events. When a UID is supplied,

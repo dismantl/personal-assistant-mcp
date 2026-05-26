@@ -253,6 +253,27 @@ async def test_fetch_events_extracts_location_and_description() -> None:
 
 
 @respx.mock
+async def test_fetch_events_exposes_uid_and_calendar_slug() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_PERSONAL)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_HOLIDAYS)
+    )
+
+    events = await fetch_events(_CONFIG, "today", now=_FIXED_NOW)
+
+    by_summary = {e["summary"]: e for e in events}
+    assert by_summary["Standup"]["uid"] == "event1@test"
+    assert by_summary["Standup"]["calendar_slug"] == "personal"
+    assert by_summary["Memorial Day Observance"]["uid"] == "holiday1@test"
+    assert by_summary["Memorial Day Observance"]["calendar_slug"] == "holidays"
+
+
+@respx.mock
 async def test_fetch_events_skips_calendar_that_fails_to_export() -> None:
     respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
         return_value=httpx.Response(207, text=_PROPFIND_XML)
@@ -294,6 +315,9 @@ END:VCALENDAR
     week_events = await fetch_events(_CONFIG, "week", now=_FIXED_NOW)
     summaries = sorted(e["summary"] for e in week_events)
     assert "Mid-week" in summaries
+    mid_week = next(e for e in week_events if e["summary"] == "Mid-week")
+    assert mid_week["uid"] == "wk@test"
+    assert mid_week["calendar_slug"] == "personal"
 
 
 async def test_fetch_events_rejects_unknown_kind() -> None:

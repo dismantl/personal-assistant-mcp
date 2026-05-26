@@ -316,8 +316,10 @@ async def fetch_events(
             expanded = recurring_ical_events.of(ical_cal).between(start, end)
             for event in expanded:
                 row: dict[str, Any] = {
+                    "uid": str(event.get("UID", "")),
                     "summary": str(event.get("SUMMARY", "")),
                     "calendar": cal["name"],
+                    "calendar_slug": cal["slug"],
                 }
                 if (dtstart := event.get("DTSTART")) is not None:
                     row["start"] = _format_ical_value(dtstart.dt)
