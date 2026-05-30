@@ -1,14 +1,21 @@
 # personal-assistant-mcp
 
-MCP server for personal-assistant tasks: Obsidian tasks/notes/digests, FreshRSS, CalDAV, Proton email.
+MCP server for personal-assistant tasks: Obsidian tasks/notes/digests,
+FreshRSS, CalDAV, and optional legacy mail compatibility.
 
-Companion to [obsidian-livesync-mcp](https://github.com/dismantl/obsidian-livesync-mcp): this server imports `obsidian-livesync-mcp`'s vault client to handle Obsidian operations, and adds higher-level tools for daily-note management, task routing, weekly reviews, RSS/release digests, and Proton mail.
+Companion to [obsidian-livesync-mcp](https://github.com/dismantl/obsidian-livesync-mcp): this server imports `obsidian-livesync-mcp`'s vault client to handle Obsidian operations, and adds higher-level tools for daily-note management, task routing, weekly reviews, RSS/release digests, and optional legacy mail compatibility.
 
 ## Status
 
 Alpha. The server includes MCP tools across tasks, daily/weekly notes, digests,
-FreshRSS, CalDAV, release-state tracking, and Proton Mail. It can run over stdio
-for local MCP clients or authenticated streamable HTTP for hosted use.
+FreshRSS, CalDAV, release-state tracking, and optional legacy mail compatibility.
+It can run over stdio for local MCP clients or authenticated streamable HTTP
+for hosted use.
+
+Generic email search, replies, folder moves, read/unread state, and attachment
+workflows are out of scope for this server. Use a dedicated email MCP server
+for mail operations. This project retains a small legacy compatibility surface
+for older deployments, but those tools are hidden unless explicitly enabled.
 
 ## Exposed tools
 
@@ -100,24 +107,6 @@ mutate a single recurring instance instead of the whole series, pass both `uid`
 and that listed instance's `recurrence_id`; updates write an iCalendar override
 and deletes add an exception date.
 
-### Proton mail
-
-| Tool | Purpose |
-|---|---|
-| `email_primary_unread` | List unread messages in the primary inbox. |
-| `email_primary_recent` | List recent messages in the primary inbox. |
-| `email_primary_folders` | List IMAP folders for the primary account. |
-| `email_primary_read` | Read a primary-mailbox message by Message-ID, including body. |
-| `email_ai_unread` | List unread messages in the AI inbox. |
-| `email_ai_recent` | List recent messages in the AI inbox. |
-| `email_ai_folders` | List IMAP folders for the AI account. |
-| `email_ai_read` | Read an AI-mailbox message by Message-ID, including body. |
-| `email_ai_send` | Send an email through the AI mailbox via Proton Bridge SMTP. |
-| `email_ai_archive` | Move an AI-mailbox message to Archive. |
-| `email_ai_delete` | Move an AI-mailbox message to Trash. |
-| `email_unsubscribe_check` | Inspect List-Unsubscribe headers on a primary-mailbox message. |
-| `email_unsubscribe_url` | Return the HTTP unsubscribe URL from a primary-mailbox message, when present. |
-
 ## Quick start
 
 ```bash
@@ -150,9 +139,11 @@ ruff format --check src/ tests/
 | `MCP_PORT` | `8080` | HTTP port (streamable-http only) |
 | `MCP_API_KEY` | (none) | Bearer token; **required** for HTTP mode — server refuses to start without it |
 | `MCP_RESOURCE_URL` | `http://localhost:$MCP_PORT` | Auth issuer/resource URL |
+| `ENABLE_LEGACY_EMAIL_TOOLS` | `false` | Register legacy mail compatibility tools only when set exactly to `true`. |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 
-Subsequent phases add env vars for CouchDB (vault access), FreshRSS, CalDAV, and Proton IMAP/SMTP.
+Subsequent phases add env vars for CouchDB (vault access), FreshRSS, CalDAV,
+and optional legacy mail compatibility.
 
 ## License
 

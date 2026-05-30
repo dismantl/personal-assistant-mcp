@@ -1,5 +1,9 @@
 """Smoke tests for the FastMCP server bootstrap, health tool, and tool registry."""
 
+import os
+import subprocess
+import sys
+
 import pytest
 
 from personal_assistant_mcp.server import health, mcp
@@ -15,11 +19,12 @@ async def test_health_returns_ok() -> None:
     assert result["status"] == "ok"
     assert result["service"] == "personal-assistant-mcp"
     assert "transport" in result
+    assert result["legacy_email_tools_enabled"] is False
 
 
 @pytest.mark.asyncio
-async def test_task_tools_registered() -> None:
-    """The task CRUD tools are attached to the FastMCP server at import time."""
+async def test_default_tools_registered_without_legacy_email() -> None:
+    """Core tools register by default, while legacy email tools stay hidden."""
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
     expected = {
@@ -57,18 +62,67 @@ async def test_task_tools_registered() -> None:
         "calendar_delete_event",
         "release_state_read",
         "release_state_update",
-        "email_primary_unread",
-        "email_primary_recent",
-        "email_primary_folders",
-        "email_primary_read",
-        "email_ai_unread",
-        "email_ai_recent",
-        "email_ai_folders",
-        "email_ai_read",
-        "email_ai_send",
-        "email_ai_archive",
-        "email_ai_delete",
-        "email_unsubscribe_check",
-        "email_unsubscribe_url",
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"
+    assert not {name for name in names if name.startswith("email_")}
+
+
+def test_legacy_email_tools_can_be_enabled() -> None:
+    """Operators can opt in to the old Proton tools for compatibility."""
+    code = """
+import asyncio
+from personal_assistant_mcp.server import mcp
+
+async def main():
+    tools = await mcp.list_tools()
+    names = {tool.name for tool in tools}
+    assert "health" in names
+    assert "tasks_list" in names
+    assert "email_primary_unread" in names
+    assert "email_ai_send" in names
+
+asyncio.run(main())
+"""
+    env = os.environ.copy()
+    env["ENABLE_LEGACY_EMAIL_TOOLS"] = "true"
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("env_value", ["", "1", "yes", "enabled", "tru", "TRUE", " true "])
+def test_legacy_email_tools_ignore_non_true_values(env_value: str) -> None:
+    """Only the literal true opt-in exposes the old Proton tools."""
+    code = """
+import asyncio
+from personal_assistant_mcp.server import mcp
+
+async def main():
+    tools = await mcp.list_tools()
+    names = {tool.name for tool in tools}
+    assert "health" in names
+    assert "tasks_list" in names
+    assert "email_primary_unread" not in names
+    assert "email_ai_send" not in names
+
+asyncio.run(main())
+"""
+    env = os.environ.copy()
+    env["ENABLE_LEGACY_EMAIL_TOOLS"] = env_value
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
