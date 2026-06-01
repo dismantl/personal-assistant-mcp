@@ -16,11 +16,14 @@ def render_task(task: Task) -> str:
     parts: list[str] = []
 
     if task.body:
+        _require_single_line("body", task.body)
         parts.append(task.body)
 
     if task.priority:
+        _require_single_line("priority", task.priority)
         parts.append(task.priority)
     if task.recurrence:
+        _require_single_line("recurrence", task.recurrence)
         parts.append(f"\U0001f501 {task.recurrence}")  # 🔁
     if task.start:
         parts.append(f"\U0001f6eb {task.start.isoformat()}")  # 🛫
@@ -40,3 +43,8 @@ def render_task(task: Task) -> str:
     if middle:
         line += f" {middle}"
     return line
+
+
+def _require_single_line(field_name: str, value: str) -> None:
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{field_name} must not contain newlines")

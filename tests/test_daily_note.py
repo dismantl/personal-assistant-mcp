@@ -360,6 +360,19 @@ async def test_append_inbox_task_rejects_empty_text(
         await append_inbox_task(fake_vault, "", today=_TODAY)
 
 
+async def test_append_inbox_task_rejects_newlines_in_recurrence(
+    fake_vault: FakeVaultClient,
+) -> None:
+    _seed_template(fake_vault)
+    with pytest.raises(ValueError, match="recurrence.*newline"):
+        await append_inbox_task(
+            fake_vault,
+            "task",
+            recurrence="every day\n- [ ] injected task",
+            today=_TODAY,
+        )
+
+
 async def test_append_inbox_task_preserves_metadata(
     fake_vault: FakeVaultClient,
 ) -> None:

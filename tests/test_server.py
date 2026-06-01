@@ -183,6 +183,24 @@ def test_inbox_route_accepts_json_metadata(
     assert "2026-06-15" in fake_vault.notes[_TODAY_PATH]
 
 
+def test_inbox_route_rejects_json_metadata_newlines(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    client = _inbox_client(monkeypatch, fake_vault)
+    response = client.post(
+        "/inbox",
+        json={"text": "file taxes", "recurrence": "every week\n- [ ] injected"},
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+    assert response.status_code == 400
+    assert "recurrence" in response.json()["error"]
+    assert _TODAY_PATH not in fake_vault.notes
+
+
 @pytest.mark.parametrize(
     "headers",
     [
