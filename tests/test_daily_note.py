@@ -237,6 +237,31 @@ async def test_write_daily_preserves_concurrent_inbox_and_log_appends(
     assert "- 10:31 — WARD: captured" in body
 
 
+async def test_write_daily_does_not_restore_inbox_task_moved_elsewhere(
+    fake_vault: FakeVaultClient,
+) -> None:
+    current_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] moved task")
+    submitted_content = append_to_section(_TEMPLATE_BODY, "## Priorities", "- [ ] moved task")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, submitted_content, today=_TODAY)
+
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert "## Priorities\n- [ ] moved task" in body
+    assert "## Inbox\n- [ ] moved task" not in body
+
+
+async def test_write_daily_can_disable_append_preservation_for_destructive_rewrite(
+    fake_vault: FakeVaultClient,
+) -> None:
+    current_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] remove task")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, _TEMPLATE_BODY, today=_TODAY, preserve_append_only=False)
+
+    assert "- [ ] remove task" not in fake_vault.notes["0 Logs/2026-05-11.md"]
+
+
 # -----------------------------------------------------------------------------
 # append_log
 # -----------------------------------------------------------------------------

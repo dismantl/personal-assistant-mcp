@@ -346,7 +346,15 @@ async def move_task(
         rollback_ok = True
         if not task_already_in_dest:
             try:
-                if dest_existed:
+                if is_daily_note_path(dest_path):
+                    await _rollback_daily_inbox_append(
+                        vault,
+                        dest_path,
+                        task,
+                        previous_content=dest_content if dest_existed else None,
+                        delete_if_template=not dest_existed,
+                    )
+                elif dest_existed:
                     await vault.write_note(dest_path, dest_content)
                 else:
                     # We created the dest file during step 3; remove it to leave
@@ -436,6 +444,25 @@ async def _append_task_to_daily_inbox(
     from ..daily.note import append_task_to_daily_inbox
 
     await append_task_to_daily_inbox(vault, file_path, task)
+
+
+async def _rollback_daily_inbox_append(
+    vault: ObsidianVaultClient,
+    file_path: str,
+    task: Task,
+    *,
+    previous_content: str | None,
+    delete_if_template: bool,
+) -> None:
+    from ..daily.note import rollback_task_append_to_daily_inbox
+
+    await rollback_task_append_to_daily_inbox(
+        vault,
+        file_path,
+        task,
+        previous_content=previous_content,
+        delete_if_template=delete_if_template,
+    )
 
 
 def _find_matching_tasks(

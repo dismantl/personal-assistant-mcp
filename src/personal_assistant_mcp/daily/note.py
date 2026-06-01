@@ -30,7 +30,7 @@ from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
-from ..tasks import Task, render_task
+from ..tasks import Task, parse_task, render_task
 from ..tasks.crud import resolve_priority
 from ..tasks.paths import (
     DAILY_NOTES_DIR,
@@ -119,6 +119,15 @@ def _section_item_lines(content: str, heading: str) -> list[str]:
     return [line for line in lines[section_start + 1 : section_end] if line.strip()]
 
 
+def _task_bodies(content: str) -> set[str]:
+    bodies: set[str] = set()
+    for line in content.splitlines():
+        task = parse_task(line)
+        if task is not None:
+            bodies.add(task.body)
+    return bodies
+
+
 def _preserve_append_only_section(content: str, current_content: str, heading: str) -> str:
     try:
         current_lines = _section_item_lines(current_content, heading)
@@ -127,9 +136,13 @@ def _preserve_append_only_section(content: str, current_content: str, heading: s
         return content
 
     seen = set(content_lines)
+    content_task_bodies = _task_bodies(content) if heading == "## Inbox" else set()
     merged = content
     for line in current_lines:
         if line in seen:
+            continue
+        task = parse_task(line) if heading == "## Inbox" else None
+        if task is not None and task.body in content_task_bodies:
             continue
         merged = append_to_section(merged, heading, line)
         seen.add(line)
@@ -215,6 +228,7 @@ async def write_daily(
     content: str,
     *,
     today: date | None = None,
+    preserve_append_only: bool = True,
 ) -> dict[str, Any]:
     """Overwrite today's daily note with ``content``.
 
@@ -229,7 +243,7 @@ async def write_daily(
             content = content + "\n"
         note = await vault.read_note(path)
         existed = note is not None
-        if note is not None:
+        if preserve_append_only and note is not None:
             content = _preserve_append_only_sections(content, note.content)
         await vault.write_note(path, content)
     return {
@@ -295,6 +309,68 @@ async def append_task_to_daily_inbox(
 
         new_content = append_to_section(note.content, "## Inbox", rendered)
         await vault.write_note(file_path, new_content)
+
+
+async def rollback_task_append_to_daily_inbox(
+    vault: ObsidianVaultClient,
+    file_path: str,
+    task: Task,
+    *,
+    previous_content: str | None,
+    delete_if_template: bool = False,
+) -> None:
+    """Rollback one task append without overwriting unrelated daily-note appends."""
+    target_date = daily_note_date_from_path(file_path)
+    if target_date is None:
+        raise ValueError(f"Not a daily-note path: {file_path!r}")
+
+    rendered = render_task(task)
+    previous_count = _count_line_in_section(previous_content or "", "## Inbox", rendered)
+    async with _DAILY_WRITE_LOCK:
+        note = await vault.read_note(file_path)
+        if note is None:
+            return
+        new_content = _remove_added_line_from_section(
+            note.content,
+            "## Inbox",
+            rendered,
+            previous_count=previous_count,
+        )
+        if delete_if_template and new_content == await get_template(vault):
+            await vault.delete_note(file_path)
+        else:
+            await vault.write_note(file_path, new_content)
+
+
+def _count_line_in_section(content: str, heading: str, target_line: str) -> int:
+    try:
+        return _section_item_lines(content, heading).count(target_line)
+    except ValueError:
+        return 0
+
+
+def _remove_added_line_from_section(
+    content: str,
+    heading: str,
+    target_line: str,
+    *,
+    previous_count: int,
+) -> str:
+    lines = content.splitlines()
+    section_start, section_end = _find_h2_section(lines, heading)
+    seen = 0
+    remove_at: int | None = None
+    for i in range(section_start + 1, section_end):
+        if lines[i] != target_line:
+            continue
+        if seen >= previous_count:
+            remove_at = i
+            break
+        seen += 1
+    if remove_at is None:
+        return content if content.endswith("\n") else content + "\n"
+    new_lines = lines[:remove_at] + lines[remove_at + 1 :]
+    return "\n".join(new_lines) + "\n"
 
 
 async def append_inbox_task(
