@@ -19,12 +19,16 @@ import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import TYPE_CHECKING, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from .calendar import tools as calendar_tools
 from .config import Settings
+from .daily import note as daily_note
 from .daily import tools as daily_tools
 from .digests import tools as digests_tools
 from .freshrss import tools as freshrss_tools
@@ -51,6 +55,7 @@ def _env_bool(name: str, *, default: bool) -> bool:
 _transport = os.environ.get("MCP_TRANSPORT", "stdio")
 _legacy_email_tools_enabled = _env_bool("ENABLE_LEGACY_EMAIL_TOOLS", default=False)
 _server_kwargs: dict = {}
+_api_key = ""
 
 if _transport == "streamable-http":
     _api_key = os.environ.get("MCP_API_KEY", "")
@@ -148,6 +153,76 @@ freshrss_tools.register(mcp)
 calendar_tools.register(mcp)
 if _legacy_email_tools_enabled:
     proton_tools.register(mcp)
+
+
+@mcp.custom_route("/inbox", methods=["POST"], include_in_schema=True)
+async def inbox_route(request: Request) -> Response:
+    """Append a captured item to today's daily-note Inbox."""
+    if not _has_valid_bearer_token(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        payload = await _parse_inbox_request(request)
+        result = await daily_note.append_inbox_task(_get_vault(), **payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return JSONResponse(result)
+
+
+def _has_valid_bearer_token(request: Request) -> bool:
+    if not _api_key:
+        return False
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return hmac.compare_digest(token, _api_key)
+
+
+async def _parse_inbox_request(request: Request) -> dict:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type == "application/json":
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("JSON body must be an object")
+        text = body.get("text")
+        if not isinstance(text, str):
+            raise ValueError("JSON body must include a string 'text' field")
+        return {
+            "text": text,
+            "priority": _optional_str(body.get("priority"), "priority"),
+            "due": _optional_date(body.get("due"), "due"),
+            "scheduled": _optional_date(body.get("scheduled"), "scheduled"),
+            "start": _optional_date(body.get("start"), "start"),
+            "recurrence": _optional_str(body.get("recurrence"), "recurrence"),
+        }
+
+    try:
+        text = (await request.body()).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Request body must be UTF-8 text") from exc
+    return {"text": text}
+
+
+def _optional_str(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name!r} must be a string")
+    return value
+
+
+def _optional_date(value: object, field_name: str) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name!r} must be an ISO date string")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name!r} must be an ISO date (YYYY-MM-DD): {value!r}") from exc
 
 
 def main() -> None:

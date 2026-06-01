@@ -20,11 +20,30 @@ PROJECTS_DIR = "1 Projects"
 AREAS_DIR = "2 Areas"
 
 _TODO_FILENAME = "todo.md"
+_DAILY_NOTE_PATH_RE = re.compile(
+    rf"^{re.escape(DAILY_NOTES_DIR)}/(?P<date>\d{{4}}-\d{{2}}-\d{{2}})\.md$"
+)
 
 
 def today_in_vault_tz() -> date:
     """Current date in the vault's canonical timezone (America/New_York)."""
     return datetime.now(VAULT_TIMEZONE).date()
+
+
+def daily_note_date_from_path(path: str) -> date | None:
+    """Return the date encoded in a canonical daily-note path, or ``None``."""
+    match = _DAILY_NOTE_PATH_RE.match(path)
+    if match is None:
+        return None
+    try:
+        return date.fromisoformat(match.group("date"))
+    except ValueError:
+        return None
+
+
+def is_daily_note_path(path: str) -> bool:
+    """True when ``path`` is a canonical daily note under ``0 Logs``."""
+    return daily_note_date_from_path(path) is not None
 
 
 def normalize_vault_path(raw: str, *, today: date | None = None) -> str:

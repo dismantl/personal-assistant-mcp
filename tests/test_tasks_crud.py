@@ -6,6 +6,7 @@ from datetime import date
 
 import pytest
 
+from personal_assistant_mcp.daily.note import DAILY_TEMPLATE_PATH
 from personal_assistant_mcp.tasks import Task
 from personal_assistant_mcp.tasks.crud import (
     MoveResult,
@@ -25,6 +26,7 @@ from personal_assistant_mcp.tasks.crud import (
 from tests.conftest import FakeVaultClient
 
 _TODAY = date(2026, 5, 11)
+_TEMPLATE_BODY = "## Priorities\n\n\n## Schedule\n\n\n## Inbox\n\n\n## Reflection\n\n\n## Log\n"
 
 
 # -----------------------------------------------------------------------------
@@ -229,6 +231,20 @@ async def test_add_task_rejects_newlines(fake_vault: FakeVaultClient) -> None:
 async def test_add_task_rejects_unknown_priority(fake_vault: FakeVaultClient) -> None:
     with pytest.raises(ValueError, match="Unknown priority"):
         await add_task(fake_vault, "x.md", "task", priority="urgent")
+
+
+async def test_add_task_to_daily_note_lands_in_inbox_and_creates_from_template(
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    ref = await add_task(fake_vault, "0 Logs/2026-05-11.md", "captured thought")
+
+    assert ref.file_path == "0 Logs/2026-05-11.md"
+    assert ref.task.body == "captured thought"
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert "## Inbox\n- [ ] captured thought\n\n\n## Reflection" in body
+    assert body.endswith("## Log\n")
 
 
 # -----------------------------------------------------------------------------
@@ -674,3 +690,16 @@ async def test_move_task_rollback_failure_surfaces_in_exception(
         await move_task(fake_vault, "src.md", "dst.md", body="move me")
 
     assert excinfo.value.rollback_succeeded is False
+
+
+async def test_move_task_to_daily_note_lands_in_inbox(fake_vault: FakeVaultClient) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+    fake_vault.notes["src.md"] = "- [ ] captured move\n"
+
+    result = await move_task(fake_vault, "src.md", "0 Logs/2026-05-11.md", body="captured move")
+
+    assert result.appended_to_dest is True
+    assert result.removed_from_source is True
+    assert fake_vault.notes["src.md"] == ""
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert "## Inbox\n- [ ] captured move\n\n\n## Reflection" in body

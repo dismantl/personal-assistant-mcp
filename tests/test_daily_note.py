@@ -221,6 +221,22 @@ async def test_write_daily_forces_trailing_newline(fake_vault: FakeVaultClient) 
     assert fake_vault.notes["0 Logs/2026-05-11.md"].endswith("\n")
 
 
+async def test_write_daily_preserves_concurrent_inbox_and_log_appends(
+    fake_vault: FakeVaultClient,
+) -> None:
+    stale_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] planned task")
+    current_content = append_to_section(stale_content, "## Inbox", "- [ ] captured task")
+    current_content = append_to_section(current_content, "## Log", "- 10:31 — WARD: captured")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, stale_content, today=_TODAY)
+
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert "- [ ] planned task" in body
+    assert "- [ ] captured task" in body
+    assert "- 10:31 — WARD: captured" in body
+
+
 # -----------------------------------------------------------------------------
 # append_log
 # -----------------------------------------------------------------------------
