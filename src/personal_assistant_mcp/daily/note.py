@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from datetime import date, datetime
 from typing import Any
 
@@ -119,12 +120,12 @@ def _section_item_lines(content: str, heading: str) -> list[str]:
     return [line for line in lines[section_start + 1 : section_end] if line.strip()]
 
 
-def _task_bodies(content: str) -> set[str]:
-    bodies: set[str] = set()
+def _task_body_counts(content: str) -> Counter[str]:
+    bodies: Counter[str] = Counter()
     for line in content.splitlines():
         task = parse_task(line)
         if task is not None:
-            bodies.add(task.body)
+            bodies[task.body] += 1
     return bodies
 
 
@@ -135,17 +136,23 @@ def _preserve_append_only_section(content: str, current_content: str, heading: s
     except ValueError:
         return content
 
-    seen = set(content_lines)
-    content_task_bodies = _task_bodies(content) if heading == "## Inbox" else set()
+    exact_matches = Counter(content_lines) & Counter(current_lines)
+    content_task_bodies = _task_body_counts(content) if heading == "## Inbox" else Counter()
+    for line, count in exact_matches.items():
+        task = parse_task(line) if heading == "## Inbox" else None
+        if task is not None:
+            content_task_bodies[task.body] -= count
+
     merged = content
     for line in current_lines:
-        if line in seen:
+        if exact_matches[line] > 0:
+            exact_matches[line] -= 1
             continue
         task = parse_task(line) if heading == "## Inbox" else None
-        if task is not None and task.body in content_task_bodies:
+        if task is not None and content_task_bodies[task.body] > 0:
+            content_task_bodies[task.body] -= 1
             continue
         merged = append_to_section(merged, heading, line)
-        seen.add(line)
     return merged
 
 

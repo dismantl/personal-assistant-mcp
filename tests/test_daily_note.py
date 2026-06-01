@@ -237,6 +237,22 @@ async def test_write_daily_preserves_concurrent_inbox_and_log_appends(
     assert "- 10:31 — WARD: captured" in body
 
 
+async def test_write_daily_preserves_duplicate_concurrent_appends(
+    fake_vault: FakeVaultClient,
+) -> None:
+    stale_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] duplicate task")
+    stale_content = append_to_section(stale_content, "## Log", "- 10:31 — WARD: duplicate")
+    current_content = append_to_section(stale_content, "## Inbox", "- [ ] duplicate task")
+    current_content = append_to_section(current_content, "## Log", "- 10:31 — WARD: duplicate")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, stale_content, today=_TODAY)
+
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert body.count("- [ ] duplicate task") == 2
+    assert body.count("- 10:31 — WARD: duplicate") == 2
+
+
 async def test_write_daily_does_not_restore_inbox_task_moved_elsewhere(
     fake_vault: FakeVaultClient,
 ) -> None:
