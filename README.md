@@ -53,6 +53,12 @@ for older deployments, but those tools are hidden unless explicitly enabled.
 | `daily_append_inbox` | Add a task to today's daily-note `## Inbox` section. |
 | `daily_archive_old` | Move old daily notes outside the current month into the archive. |
 
+### HTTP routes
+
+| Route | Purpose |
+|---|---|
+| `POST /inbox` | Append a captured task to today's daily-note `## Inbox` section. Accepts `text/plain` or JSON `{"text": "..."}` with optional task metadata. Requires `Authorization: Bearer <MCP_API_KEY>`. |
+
 ### Weekly reviews
 
 | Tool | Purpose |

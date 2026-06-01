@@ -5,8 +5,23 @@ import subprocess
 import sys
 
 import pytest
+from starlette.testclient import TestClient
 
+from personal_assistant_mcp import server as server_module
+from personal_assistant_mcp.daily import note as daily_note
+from personal_assistant_mcp.daily.note import DAILY_TEMPLATE_PATH
 from personal_assistant_mcp.server import health, mcp
+from tests.conftest import FakeVaultClient
+
+_TODAY_PATH = "0 Logs/2026-05-11.md"
+_TEMPLATE_BODY = "## Priorities\n\n\n## Schedule\n\n\n## Inbox\n\n\n## Reflection\n\n\n## Log\n"
+
+
+def _inbox_client(monkeypatch: pytest.MonkeyPatch, fake_vault: FakeVaultClient) -> TestClient:
+    monkeypatch.setattr(server_module, "_api_key", "test-key", raising=False)
+    monkeypatch.setattr(server_module, "_vault", fake_vault)
+    monkeypatch.setattr(daily_note, "today_in_vault_tz", lambda: daily_note.date(2026, 5, 11))
+    return TestClient(server_module.mcp.streamable_http_app())
 
 
 def test_mcp_server_name() -> None:
@@ -126,3 +141,100 @@ asyncio.run(main())
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_inbox_route_accepts_text_plain(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    client = _inbox_client(monkeypatch, fake_vault)
+    response = client.post(
+        "/inbox",
+        content="buy milk",
+        headers={"Authorization": "Bearer test-key", "Content-Type": "text/plain"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["body"] == "buy milk"
+    assert "## Inbox\n- [ ] buy milk\n\n\n## Reflection" in fake_vault.notes[_TODAY_PATH]
+
+
+def test_inbox_route_accepts_json_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    client = _inbox_client(monkeypatch, fake_vault)
+    response = client.post(
+        "/inbox",
+        json={"text": "file taxes", "priority": "high", "due": "2026-06-15"},
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["body"] == "file taxes"
+    assert payload["priority_bucket"] == "high"
+    assert payload["due"] == "2026-06-15"
+    assert "- [ ] file taxes" in fake_vault.notes[_TODAY_PATH]
+    assert "2026-06-15" in fake_vault.notes[_TODAY_PATH]
+
+
+def test_inbox_route_rejects_json_metadata_newlines(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    client = _inbox_client(monkeypatch, fake_vault)
+    response = client.post(
+        "/inbox",
+        json={"text": "file taxes", "recurrence": "every week\n- [ ] injected"},
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+    assert response.status_code == 400
+    assert "recurrence" in response.json()["error"]
+    assert _TODAY_PATH not in fake_vault.notes
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer wrong"},
+        {"Authorization": "Basic dGVzdC1rZXk="},
+    ],
+)
+def test_inbox_route_rejects_missing_or_bad_token(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vault: FakeVaultClient,
+    headers: dict[str, str],
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    client = _inbox_client(monkeypatch, fake_vault)
+    response = client.post("/inbox", content="buy milk", headers=headers)
+
+    assert response.status_code == 401
+    assert _TODAY_PATH not in fake_vault.notes
+
+
+def test_inbox_route_rejects_empty_body(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes[DAILY_TEMPLATE_PATH] = _TEMPLATE_BODY
+
+    client = _inbox_client(monkeypatch, fake_vault)
+    response = client.post(
+        "/inbox",
+        content="   ",
+        headers={"Authorization": "Bearer test-key", "Content-Type": "text/plain"},
+    )
+
+    assert response.status_code == 400
+    assert _TODAY_PATH not in fake_vault.notes

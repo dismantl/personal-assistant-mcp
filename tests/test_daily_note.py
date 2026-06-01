@@ -221,6 +221,63 @@ async def test_write_daily_forces_trailing_newline(fake_vault: FakeVaultClient) 
     assert fake_vault.notes["0 Logs/2026-05-11.md"].endswith("\n")
 
 
+async def test_write_daily_preserves_concurrent_inbox_and_log_appends(
+    fake_vault: FakeVaultClient,
+) -> None:
+    stale_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] planned task")
+    current_content = append_to_section(stale_content, "## Inbox", "- [ ] captured task")
+    current_content = append_to_section(current_content, "## Log", "- 10:31 — WARD: captured")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, stale_content, today=_TODAY)
+
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert "- [ ] planned task" in body
+    assert "- [ ] captured task" in body
+    assert "- 10:31 — WARD: captured" in body
+
+
+async def test_write_daily_preserves_duplicate_concurrent_appends(
+    fake_vault: FakeVaultClient,
+) -> None:
+    stale_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] duplicate task")
+    stale_content = append_to_section(stale_content, "## Log", "- 10:31 — WARD: duplicate")
+    current_content = append_to_section(stale_content, "## Inbox", "- [ ] duplicate task")
+    current_content = append_to_section(current_content, "## Log", "- 10:31 — WARD: duplicate")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, stale_content, today=_TODAY)
+
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert body.count("- [ ] duplicate task") == 2
+    assert body.count("- 10:31 — WARD: duplicate") == 2
+
+
+async def test_write_daily_does_not_restore_inbox_task_moved_elsewhere(
+    fake_vault: FakeVaultClient,
+) -> None:
+    current_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] moved task")
+    submitted_content = append_to_section(_TEMPLATE_BODY, "## Priorities", "- [ ] moved task")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, submitted_content, today=_TODAY)
+
+    body = fake_vault.notes["0 Logs/2026-05-11.md"]
+    assert "## Priorities\n- [ ] moved task" in body
+    assert "## Inbox\n- [ ] moved task" not in body
+
+
+async def test_write_daily_can_disable_append_preservation_for_destructive_rewrite(
+    fake_vault: FakeVaultClient,
+) -> None:
+    current_content = append_to_section(_TEMPLATE_BODY, "## Inbox", "- [ ] remove task")
+    fake_vault.notes["0 Logs/2026-05-11.md"] = current_content
+
+    await write_daily(fake_vault, _TEMPLATE_BODY, today=_TODAY, preserve_append_only=False)
+
+    assert "- [ ] remove task" not in fake_vault.notes["0 Logs/2026-05-11.md"]
+
+
 # -----------------------------------------------------------------------------
 # append_log
 # -----------------------------------------------------------------------------
@@ -301,6 +358,19 @@ async def test_append_inbox_task_rejects_empty_text(
     _seed_template(fake_vault)
     with pytest.raises(ValueError, match="empty"):
         await append_inbox_task(fake_vault, "", today=_TODAY)
+
+
+async def test_append_inbox_task_rejects_newlines_in_recurrence(
+    fake_vault: FakeVaultClient,
+) -> None:
+    _seed_template(fake_vault)
+    with pytest.raises(ValueError, match="recurrence.*newline"):
+        await append_inbox_task(
+            fake_vault,
+            "task",
+            recurrence="every day\n- [ ] injected task",
+            today=_TODAY,
+        )
 
 
 async def test_append_inbox_task_preserves_metadata(

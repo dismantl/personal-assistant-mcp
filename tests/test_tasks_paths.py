@@ -8,6 +8,7 @@ import pytest
 
 from personal_assistant_mcp.tasks.paths import (
     DAILY_NOTES_DIR,
+    is_daily_note_path,
     normalize_vault_path,
     resolve_move_destination,
     today_in_vault_tz,
@@ -106,6 +107,30 @@ def test_normalize_preserves_unicode_path_segments() -> None:
 def test_normalize_does_not_add_md_extension() -> None:
     """The function does not auto-add .md — callers are responsible for the extension."""
     assert normalize_vault_path("1 Projects/x/todo", today=_FIXED_TODAY) == "1 Projects/x/todo"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "0 Logs/2026-05-11.md",
+        "0 Logs/1999-01-31.md",
+    ],
+)
+def test_is_daily_note_path_accepts_canonical_daily_notes(path: str) -> None:
+    assert is_daily_note_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "0 Logs/today.md",
+        "0 Logs/Archive/2026/2026-05/2026-05-11.md",
+        "0 Logs/2026-05-11",
+        "1 Projects/2026-05-11.md",
+    ],
+)
+def test_is_daily_note_path_rejects_non_daily_notes(path: str) -> None:
+    assert is_daily_note_path(path) is False
 
 
 # -----------------------------------------------------------------------------

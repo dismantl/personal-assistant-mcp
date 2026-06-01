@@ -18,7 +18,7 @@ from obsidian_livesync_mcp.client import ObsidianVaultClient
 from ..vault import iter_all_notes
 from .model import Task
 from .parse import PRIORITY_EMOJI, parse_task
-from .paths import today_in_vault_tz
+from .paths import daily_note_date_from_path, is_daily_note_path, today_in_vault_tz
 from .render import render_task
 
 _BUCKET_TO_EMOJI: dict[str, str] = {
@@ -170,7 +170,11 @@ async def add_task(
     start: date | None = None,
     recurrence: str | None = None,
 ) -> TaskRef:
-    """Append a new task to ``file_path``. Creates the file if it doesn't exist."""
+    """Append a new task to ``file_path``.
+
+    Creates the file if it doesn't exist. Daily-note targets are inserted under
+    ``## Inbox`` after instantiating the daily-note template if needed.
+    """
     cleaned = text.strip()
     if not cleaned:
         raise ValueError("Task text must not be empty")
@@ -186,6 +190,10 @@ async def add_task(
         recurrence=recurrence,
     )
     rendered = render_task(new_task)
+
+    if is_daily_note_path(file_path):
+        await _append_task_to_daily_inbox(vault, file_path, new_task)
+        return TaskRef(file_path, new_task)
 
     note = await vault.read_note(file_path)
     if note is None:
@@ -285,7 +293,8 @@ async def move_task(
     1. Read source; locate the task by ``task_id`` or ``body``.
     2. Read destination; if any line in dest has the same task body,
        treat the dest-append as a no-op.
-    3. Otherwise, append the task (with all metadata) to dest.
+    3. Otherwise, append the task (with all metadata) to dest. Daily-note
+       destinations land under ``## Inbox`` after template creation if needed.
     4. Re-read source; if its content has changed since step 1, abort
        and roll back the dest-append (if performed). The caller sees
        a :class:`TaskMoveConflict`.
@@ -324,9 +333,12 @@ async def move_task(
 
     # Step 3 — append to dest if not already present
     if not task_already_in_dest:
-        rendered = render_task(task)
-        new_dest_lines = dest_lines + [rendered]
-        await vault.write_note(dest_path, _rebuild(new_dest_lines))
+        if is_daily_note_path(dest_path):
+            await _append_task_to_daily_inbox(vault, dest_path, task)
+        else:
+            rendered = render_task(task)
+            new_dest_lines = dest_lines + [rendered]
+            await vault.write_note(dest_path, _rebuild(new_dest_lines))
 
     # Step 4 — optimistic concurrency check on source
     fresh_source = await vault.read_note(source_path)
@@ -334,7 +346,15 @@ async def move_task(
         rollback_ok = True
         if not task_already_in_dest:
             try:
-                if dest_existed:
+                if is_daily_note_path(dest_path):
+                    await _rollback_daily_inbox_append(
+                        vault,
+                        dest_path,
+                        task,
+                        previous_content=dest_content if dest_existed else None,
+                        delete_if_template=not dest_existed,
+                    )
+                elif dest_existed:
                     await vault.write_note(dest_path, dest_content)
                 else:
                     # We created the dest file during step 3; remove it to leave
@@ -409,6 +429,40 @@ def _has_task_with_body(lines: list[str], target_body: str) -> bool:
         if t is not None and t.body.strip() == target:
             return True
     return False
+
+
+async def _append_task_to_daily_inbox(
+    vault: ObsidianVaultClient,
+    file_path: str,
+    task: Task,
+) -> None:
+    """Append ``task`` to a canonical daily note's ``## Inbox`` section."""
+    target_date = daily_note_date_from_path(file_path)
+    if target_date is None:
+        raise ValueError(f"Not a daily-note path: {file_path!r}")
+
+    from ..daily.note import append_task_to_daily_inbox
+
+    await append_task_to_daily_inbox(vault, file_path, task)
+
+
+async def _rollback_daily_inbox_append(
+    vault: ObsidianVaultClient,
+    file_path: str,
+    task: Task,
+    *,
+    previous_content: str | None,
+    delete_if_template: bool,
+) -> None:
+    from ..daily.note import rollback_task_append_to_daily_inbox
+
+    await rollback_task_append_to_daily_inbox(
+        vault,
+        file_path,
+        task,
+        previous_content=previous_content,
+        delete_if_template=delete_if_template,
+    )
 
 
 def _find_matching_tasks(

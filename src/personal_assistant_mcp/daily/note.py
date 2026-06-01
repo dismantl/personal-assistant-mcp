@@ -23,15 +23,22 @@ the last content line — preserving the empty lines that separate sections.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections import Counter
 from datetime import date, datetime
 from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
-from ..tasks import Task, render_task
+from ..tasks import Task, parse_task, render_task
 from ..tasks.crud import resolve_priority
-from ..tasks.paths import DAILY_NOTES_DIR, VAULT_TIMEZONE, today_in_vault_tz
+from ..tasks.paths import (
+    DAILY_NOTES_DIR,
+    VAULT_TIMEZONE,
+    daily_note_date_from_path,
+    today_in_vault_tz,
+)
 from ..vault import iter_all_notes
 
 DAILY_TEMPLATE_PATH = "Templates/Daily Note.md"
@@ -41,6 +48,7 @@ _DAILY_PATH_RE = re.compile(
     rf"^{re.escape(DAILY_NOTES_DIR)}/(?P<date>\d{{4}}-\d{{2}}-\d{{2}})\.md$"
 )
 _H2_HEADING_RE = re.compile(r"^##\s+\S")
+_DAILY_WRITE_LOCK = asyncio.Lock()
 
 
 # -----------------------------------------------------------------------------
@@ -71,9 +79,20 @@ def append_to_section(content: str, heading: str, new_line: str) -> str:
     delimited) so a code sample containing ``## foo`` doesn't terminate the
     enclosing section.
     """
-    target = heading.strip()
     lines = content.splitlines()
+    section_start, section_end = _find_h2_section(lines, heading)
 
+    insert_at = section_end
+    while insert_at > section_start + 1 and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+
+    new_lines = lines[:insert_at] + [new_line] + lines[insert_at:]
+    # Always force trailing newline (Obsidian canonical shape; matches crud._rebuild).
+    return "\n".join(new_lines) + "\n"
+
+
+def _find_h2_section(lines: list[str], heading: str) -> tuple[int, int]:
+    target = heading.strip()
     section_start: int | None = None
     section_end = len(lines)
     in_fence = False
@@ -86,21 +105,62 @@ def append_to_section(content: str, heading: str, new_line: str) -> str:
         if section_start is None:
             if line.strip() == target:
                 section_start = i
-        else:
-            if _H2_HEADING_RE.match(line):
-                section_end = i
-                break
+        elif _H2_HEADING_RE.match(line):
+            section_end = i
+            break
 
     if section_start is None:
         raise ValueError(f"Section {heading!r} not found in note")
+    return section_start, section_end
 
-    insert_at = section_end
-    while insert_at > section_start + 1 and lines[insert_at - 1].strip() == "":
-        insert_at -= 1
 
-    new_lines = lines[:insert_at] + [new_line] + lines[insert_at:]
-    # Always force trailing newline (Obsidian canonical shape; matches crud._rebuild).
-    return "\n".join(new_lines) + "\n"
+def _section_item_lines(content: str, heading: str) -> list[str]:
+    lines = content.splitlines()
+    section_start, section_end = _find_h2_section(lines, heading)
+    return [line for line in lines[section_start + 1 : section_end] if line.strip()]
+
+
+def _task_body_counts(content: str) -> Counter[str]:
+    bodies: Counter[str] = Counter()
+    for line in content.splitlines():
+        task = parse_task(line)
+        if task is not None:
+            bodies[task.body] += 1
+    return bodies
+
+
+def _preserve_append_only_section(content: str, current_content: str, heading: str) -> str:
+    try:
+        current_lines = _section_item_lines(current_content, heading)
+        content_lines = _section_item_lines(content, heading)
+    except ValueError:
+        return content
+
+    exact_matches = Counter(content_lines) & Counter(current_lines)
+    content_task_bodies = _task_body_counts(content) if heading == "## Inbox" else Counter()
+    for line, count in exact_matches.items():
+        task = parse_task(line) if heading == "## Inbox" else None
+        if task is not None:
+            content_task_bodies[task.body] -= count
+
+    merged = content
+    for line in current_lines:
+        if exact_matches[line] > 0:
+            exact_matches[line] -= 1
+            continue
+        task = parse_task(line) if heading == "## Inbox" else None
+        if task is not None and content_task_bodies[task.body] > 0:
+            content_task_bodies[task.body] -= 1
+            continue
+        merged = append_to_section(merged, heading, line)
+    return merged
+
+
+def _preserve_append_only_sections(content: str, current_content: str) -> str:
+    merged = content
+    for heading in ("## Inbox", "## Log"):
+        merged = _preserve_append_only_section(merged, current_content, heading)
+    return merged
 
 
 # -----------------------------------------------------------------------------
@@ -175,6 +235,7 @@ async def write_daily(
     content: str,
     *,
     today: date | None = None,
+    preserve_append_only: bool = True,
 ) -> dict[str, Any]:
     """Overwrite today's daily note with ``content``.
 
@@ -182,12 +243,16 @@ async def write_daily(
     composes the full note body (e.g., morning planning) and needs to write
     it atomically. For incremental edits prefer ``append_log`` / ``append_inbox_task``.
     """
-    today = today or today_in_vault_tz()
-    path = daily_path(today)
-    if not content.endswith("\n"):
-        content = content + "\n"
-    existed = await vault.read_note(path) is not None
-    await vault.write_note(path, content)
+    async with _DAILY_WRITE_LOCK:
+        today = today or today_in_vault_tz()
+        path = daily_path(today)
+        if not content.endswith("\n"):
+            content = content + "\n"
+        note = await vault.read_note(path)
+        existed = note is not None
+        if preserve_append_only and note is not None:
+            content = _preserve_append_only_sections(content, note.content)
+        await vault.write_note(path, content)
     return {
         "date": today.isoformat(),
         "path": path,
@@ -222,14 +287,97 @@ async def append_log(
     now = now or datetime.now(VAULT_TIMEZONE)
     entry = f"- {now.strftime('%H:%M')} — {project}: {description}"
 
-    await ensure_today_note(vault, today=today)
-    path = daily_path(today)
-    note = await vault.read_note(path)
-    assert note is not None  # just created above
+    async with _DAILY_WRITE_LOCK:
+        await ensure_today_note(vault, today=today)
+        path = daily_path(today)
+        note = await vault.read_note(path)
+        assert note is not None  # just created above
 
-    new_content = append_to_section(note.content, "## Log", entry)
-    await vault.write_note(path, new_content)
+        new_content = append_to_section(note.content, "## Log", entry)
+        await vault.write_note(path, new_content)
     return {"path": path, "entry": entry}
+
+
+async def append_task_to_daily_inbox(
+    vault: ObsidianVaultClient,
+    file_path: str,
+    task: Task,
+) -> None:
+    """Append ``task`` to the ``## Inbox`` section of a canonical daily-note path."""
+    target_date = daily_note_date_from_path(file_path)
+    if target_date is None:
+        raise ValueError(f"Not a daily-note path: {file_path!r}")
+
+    rendered = render_task(task)
+    async with _DAILY_WRITE_LOCK:
+        await ensure_today_note(vault, today=target_date)
+        note = await vault.read_note(file_path)
+        assert note is not None
+
+        new_content = append_to_section(note.content, "## Inbox", rendered)
+        await vault.write_note(file_path, new_content)
+
+
+async def rollback_task_append_to_daily_inbox(
+    vault: ObsidianVaultClient,
+    file_path: str,
+    task: Task,
+    *,
+    previous_content: str | None,
+    delete_if_template: bool = False,
+) -> None:
+    """Rollback one task append without overwriting unrelated daily-note appends."""
+    target_date = daily_note_date_from_path(file_path)
+    if target_date is None:
+        raise ValueError(f"Not a daily-note path: {file_path!r}")
+
+    rendered = render_task(task)
+    previous_count = _count_line_in_section(previous_content or "", "## Inbox", rendered)
+    async with _DAILY_WRITE_LOCK:
+        note = await vault.read_note(file_path)
+        if note is None:
+            return
+        new_content = _remove_added_line_from_section(
+            note.content,
+            "## Inbox",
+            rendered,
+            previous_count=previous_count,
+        )
+        if delete_if_template and new_content == await get_template(vault):
+            await vault.delete_note(file_path)
+        else:
+            await vault.write_note(file_path, new_content)
+
+
+def _count_line_in_section(content: str, heading: str, target_line: str) -> int:
+    try:
+        return _section_item_lines(content, heading).count(target_line)
+    except ValueError:
+        return 0
+
+
+def _remove_added_line_from_section(
+    content: str,
+    heading: str,
+    target_line: str,
+    *,
+    previous_count: int,
+) -> str:
+    lines = content.splitlines()
+    section_start, section_end = _find_h2_section(lines, heading)
+    seen = 0
+    remove_at: int | None = None
+    for i in range(section_start + 1, section_end):
+        if lines[i] != target_line:
+            continue
+        if seen >= previous_count:
+            remove_at = i
+            break
+        seen += 1
+    if remove_at is None:
+        return content if content.endswith("\n") else content + "\n"
+    new_lines = lines[:remove_at] + lines[remove_at + 1 :]
+    return "\n".join(new_lines) + "\n"
 
 
 async def append_inbox_task(
@@ -251,11 +399,6 @@ async def append_inbox_task(
         raise ValueError("Task text must not contain newlines")
 
     today = today or today_in_vault_tz()
-    await ensure_today_note(vault, today=today)
-    path = daily_path(today)
-    note = await vault.read_note(path)
-    assert note is not None
-
     task = Task(
         body=cleaned,
         priority=resolve_priority(priority),
@@ -264,9 +407,8 @@ async def append_inbox_task(
         start=start,
         recurrence=recurrence,
     )
-    rendered = render_task(task)
-    new_content = append_to_section(note.content, "## Inbox", rendered)
-    await vault.write_note(path, new_content)
+    path = daily_path(today)
+    await append_task_to_daily_inbox(vault, path, task)
 
     return {
         "path": path,

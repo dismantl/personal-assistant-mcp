@@ -131,7 +131,8 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
 
         Args:
             text: task body (without leading checkbox).
-            file_path: vault path. ``today`` resolves to today's daily note.
+            file_path: vault path. ``today`` resolves to today's daily note,
+                where the task lands under ``## Inbox``.
             priority: ``high``, ``medium``, ``low``, or a priority emoji.
             due, scheduled, start: ISO dates.
             recurrence: free-form rule text (e.g. ``every Monday``).
@@ -247,7 +248,8 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             source_path: vault path of the file the task currently lives in.
             dest_path: vault path or Project/Area folder. If a folder under
                 ``1 Projects/`` or ``2 Areas/``, resolves to ``<folder>/todo.md``
-                (creating the file if missing).
+                (creating the file if missing). Daily-note destinations land
+                under ``## Inbox``.
             task_id: optional content-hash from ``tasks_list``.
             body: alternative identity — exact task body text.
 
