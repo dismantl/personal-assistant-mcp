@@ -160,6 +160,32 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_RECURRING_INVITE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/recurring-invite-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:recurring-invite-123
+SUMMARY:Emily appt
+DTSTART:20260609T130000Z
+DTEND:20260609T140000Z
+RRULE:FREQ=WEEKLY;COUNT=4
+ORGANIZER;CN=Emily:mailto:emily@example.test
+ATTENDEE;CN=Dan;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:dan@example.test
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_EMPTY_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" />
 """
@@ -781,6 +807,48 @@ async def test_rsvp_event_finds_invite_across_writable_calendars() -> None:
     assert not holidays_report.called
     body = route.calls.last.request.content.decode()
     assert "PARTSTAT=DECLINED" in body
+
+
+@respx.mock
+async def test_rsvp_event_updates_one_recurring_instance() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_INVITE_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-invite-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await rsvp_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-invite-123",
+        attendee="mailto:dan@example.test",
+        partstat="ACCEPTED",
+        recurrence_id="2026-06-16T13:00:00+00:00",
+    )
+
+    assert result == {
+        "uid": "recurring-invite-123",
+        "href": "https://cal.example/dav/personal/recurring-invite-resource.ics",
+        "partstat": "ACCEPTED",
+        "updated": True,
+        "recurrence_id": "2026-06-16T13:00:00+00:00",
+    }
+    request = route.calls.last.request
+    assert request.headers["If-Match"] == "*"
+    events = _vevents_from_body(request.content.decode())
+    assert len(events) == 2
+    master = next(event for event in events if event.get("RECURRENCE-ID") is None)
+    override = next(event for event in events if event.get("RECURRENCE-ID") is not None)
+    assert str(master.get("SUMMARY")) == "Emily appt"
+    assert "RRULE" in master
+    assert "RRULE" not in override
+    assert override.get("RECURRENCE-ID").dt == datetime(2026, 6, 16, 13, 0, tzinfo=timezone.utc)
+    assert override.get("DTSTART").dt == datetime(2026, 6, 16, 13, 0, tzinfo=timezone.utc)
+    assert override.get("DTEND").dt == datetime(2026, 6, 16, 14, 0, tzinfo=timezone.utc)
+    assert str(override.get("ATTENDEE")) == "mailto:dan@example.test"
+    assert override.get("ATTENDEE").params["PARTSTAT"] == "ACCEPTED"
+    assert str(override.get("ORGANIZER")) == "mailto:emily@example.test"
 
 
 @respx.mock

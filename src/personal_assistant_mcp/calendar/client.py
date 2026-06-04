@@ -15,6 +15,7 @@ Env vars used by ``CalDAVConfig.from_env``:
 from __future__ import annotations
 
 import base64
+import copy
 import os
 import re
 import uuid
@@ -300,6 +301,29 @@ def _select_rsvp_event(
     return master or (matches[0] if len(matches) == 1 else None)
 
 
+def _build_rsvp_recurrence_override(
+    master: icalendar.Event,
+    recurrence_id: date | datetime,
+) -> icalendar.Event:
+    override = copy.deepcopy(master)
+    for prop_name in ("RRULE", "RDATE", "EXDATE", "RECURRENCE-ID"):
+        override.pop(prop_name, None)
+    override.add("recurrence-id", recurrence_id)
+
+    dtstart = master.get("DTSTART")
+    dtend = master.get("DTEND")
+    if dtstart is not None:
+        override.pop("DTSTART", None)
+        override.add("dtstart", recurrence_id)
+    if dtstart is not None and dtend is not None:
+        override.pop("DTEND", None)
+        try:
+            override.add("dtend", recurrence_id + (dtend.dt - dtstart.dt))
+        except TypeError:
+            override.add("dtend", dtend.dt)
+    return override
+
+
 def _update_attendee_partstat(
     calendar_data: str,
     *,
@@ -310,6 +334,11 @@ def _update_attendee_partstat(
 ) -> tuple[bytes | None, dict[str, Any] | None]:
     calendar = icalendar.Calendar.from_ical(calendar_data)
     component = _select_rsvp_event(calendar, uid=uid, recurrence_id=recurrence_id)
+    if component is None and recurrence_id is not None:
+        master = _find_master_event(calendar, uid)
+        if master is not None:
+            component = _build_rsvp_recurrence_override(master, recurrence_id)
+            calendar.add_component(component)
     if component is None:
         return None, {"error": f"Event not found: {uid}", "uid": uid}
 
