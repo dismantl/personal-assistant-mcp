@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from personal_assistant_mcp import server as server_module
@@ -15,6 +16,12 @@ from tests.conftest import FakeVaultClient
 
 _TODAY_PATH = "0 Logs/2026-05-11.md"
 _TEMPLATE_BODY = "## Priorities\n\n\n## Schedule\n\n\n## Inbox\n\n\n## Reflection\n\n\n## Log\n"
+
+
+class BlankWriteFailureVault(FakeVaultClient):
+    async def write_note(self, path: str, content: str) -> bool:
+        await super().write_note(path, content)
+        raise RuntimeError()
 
 
 def _inbox_client(monkeypatch: pytest.MonkeyPatch, fake_vault: FakeVaultClient) -> TestClient:
@@ -80,6 +87,22 @@ async def test_default_tools_registered_without_legacy_email() -> None:
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"
     assert not {name for name in names if name.startswith("email_")}
+
+
+@pytest.mark.asyncio
+async def test_tool_errors_include_exception_type_when_exception_message_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_vault = BlankWriteFailureVault()
+    monkeypatch.setattr(server_module, "_vault", fake_vault)
+
+    with caplog.at_level("ERROR", logger="personal_assistant_mcp.tasks.tools"):
+        with pytest.raises(ToolError) as excinfo:
+            await mcp.call_tool("tasks_add", {"text": "buy milk", "file_path": "x.md"})
+
+    assert "tasks_add failed: RuntimeError" in str(excinfo.value)
+    assert "MCP tool tasks_add failed" in caplog.text
 
 
 def test_legacy_email_tools_can_be_enabled() -> None:

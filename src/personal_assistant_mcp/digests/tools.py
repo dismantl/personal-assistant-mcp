@@ -9,6 +9,7 @@ from typing import Any
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
 from ..tasks.paths import today_in_vault_tz
+from ..tool_errors import surface_tool_errors
 from . import digest
 
 
@@ -25,6 +26,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     """Attach digest tools to the FastMCP server."""
 
     @mcp.tool()
+    @surface_tool_errors("digest_read")
     async def digest_read(kind: str, target_date: str | None = None) -> dict[str, Any] | None:
         """Read a digest note for a given date.
 
@@ -36,6 +38,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return await digest.read_digest(get_vault(), kind, parsed)
 
     @mcp.tool()
+    @surface_tool_errors("digest_write")
     async def digest_write(
         kind: str,
         content: str,
