@@ -93,5 +93,24 @@ def register(mcp: Any) -> None:
             recurrence_id=recurrence_id,
         )
 
+    @mcp.tool()
+    @surface_tool_errors("calendar_rsvp")
+    async def calendar_rsvp(
+        uid: str,
+        partstat: str,
+        calendar_slug: str | None = None,
+        attendee: str | None = None,
+        recurrence_id: str | None = None,
+    ) -> dict[str, Any]:
+        """RSVP to an existing CalDAV invitation by updating attendee status."""
+        return await caldav.rsvp_event(
+            caldav.CalDAVConfig.from_env(),
+            uid=uid,
+            partstat=partstat,
+            calendar_slug=calendar_slug,
+            attendee=attendee,
+            recurrence_id=recurrence_id,
+        )
+
 
 __all__ = ["register"]

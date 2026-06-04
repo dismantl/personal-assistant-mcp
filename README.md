@@ -98,6 +98,7 @@ for older deployments, but those tools are hidden unless explicitly enabled.
 | `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes. |
 | `calendar_update_event` | Replace an event, or one recurring instance when `recurrence_id` is supplied, from timezone-aware ISO datetimes. |
 | `calendar_delete_event` | Delete an event, or one recurring instance when `recurrence_id` is supplied. |
+| `calendar_rsvp` | Update attendee status on an existing invitation while preserving CalDAV scheduling context. |
 
 `calendar_today` and `calendar_week` include each event's iCalendar `uid` and
 `calendar_slug`, plus `recurrence_id` for recurring instances, so listed events
@@ -112,6 +113,10 @@ iCalendar UID, which does not need to match the CalDAV resource filename. To
 mutate a single recurring instance instead of the whole series, pass both `uid`
 and that listed instance's `recurrence_id`; updates write an iCalendar override
 and deletes add an exception date.
+
+`calendar_rsvp` preserves the existing invitation resource and updates only the
+selected attendee `PARTSTAT`, so CalDAV scheduling can send the organizer a real
+invitation response.
 
 ## Quick start
 

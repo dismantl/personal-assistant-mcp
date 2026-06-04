@@ -82,6 +82,7 @@ async def test_default_tools_registered_without_legacy_email() -> None:
         "calendar_create_event",
         "calendar_update_event",
         "calendar_delete_event",
+        "calendar_rsvp",
         "release_state_read",
         "release_state_update",
     }
