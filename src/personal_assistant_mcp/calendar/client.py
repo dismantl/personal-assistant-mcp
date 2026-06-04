@@ -15,6 +15,7 @@ Env vars used by ``CalDAVConfig.from_env``:
 from __future__ import annotations
 
 import base64
+import copy
 import os
 import re
 import uuid
@@ -45,6 +46,18 @@ _PROPFIND_BODY = (
 _SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~@-]+$")
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DISPLAY_TZ_SUFFIX = re.compile(r"^(?P<value>.+) \((?P<tz>[^)]+)\)$")
+_PARTSTAT_ALIASES = {
+    "accept": "ACCEPTED",
+    "accepted": "ACCEPTED",
+    "going": "ACCEPTED",
+    "decline": "DECLINED",
+    "declined": "DECLINED",
+    "not-going": "DECLINED",
+    "not_going": "DECLINED",
+    "tentative": "TENTATIVE",
+    "maybe": "TENTATIVE",
+}
+_ALLOWED_PARTSTATS = frozenset({"ACCEPTED", "DECLINED", "TENTATIVE"})
 
 
 @dataclass(frozen=True)
@@ -232,6 +245,122 @@ async def _find_event_href_by_uid(
 ) -> str | None:
     resource = await _find_event_resource_by_uid(config, calendar_slug, uid, client=client)
     return resource.href if resource is not None else None
+
+
+def _normalize_partstat(value: str) -> str:
+    normalized = value.strip().upper()
+    normalized = _PARTSTAT_ALIASES.get(value.strip().lower(), normalized)
+    if normalized not in _ALLOWED_PARTSTATS:
+        allowed = ", ".join(sorted(_ALLOWED_PARTSTATS))
+        raise ValueError(f"partstat must be one of: {allowed}")
+    return normalized
+
+
+def _normalize_calendar_address(value: Any) -> str:
+    address = str(value).strip().lower()
+    if address.startswith("mailto:"):
+        address = address[7:]
+    return address
+
+
+def _component_attendees(component: icalendar.Event) -> list[Any]:
+    attendees = component.get("ATTENDEE")
+    if attendees is None:
+        return []
+    if isinstance(attendees, list):
+        return attendees
+    return [attendees]
+
+
+def _attendee_matches(value: Any, target: str) -> bool:
+    return _normalize_calendar_address(value) == target
+
+
+def _select_rsvp_event(
+    calendar: icalendar.Calendar,
+    *,
+    uid: str,
+    recurrence_id: date | datetime | None,
+) -> icalendar.Event | None:
+    matches = [
+        component for component in calendar.walk("VEVENT") if str(component.get("UID", "")) == uid
+    ]
+    if recurrence_id is not None:
+        return next(
+            (
+                component
+                for component in matches
+                if _recurrence_id_matches(component, recurrence_id)
+            ),
+            None,
+        )
+    master = next(
+        (component for component in matches if component.get("RECURRENCE-ID") is None),
+        None,
+    )
+    return master or (matches[0] if len(matches) == 1 else None)
+
+
+def _build_rsvp_recurrence_override(
+    master: icalendar.Event,
+    recurrence_id: date | datetime,
+) -> icalendar.Event:
+    override = copy.deepcopy(master)
+    for prop_name in ("RRULE", "RDATE", "EXDATE", "RECURRENCE-ID"):
+        override.pop(prop_name, None)
+    override.add("recurrence-id", recurrence_id)
+
+    dtstart = master.get("DTSTART")
+    dtend = master.get("DTEND")
+    if dtstart is not None:
+        override.pop("DTSTART", None)
+        override.add("dtstart", recurrence_id)
+    if dtstart is not None and dtend is not None:
+        override.pop("DTEND", None)
+        try:
+            override.add("dtend", recurrence_id + (dtend.dt - dtstart.dt))
+        except TypeError:
+            override.add("dtend", dtend.dt)
+    return override
+
+
+def _update_attendee_partstat(
+    calendar_data: str,
+    *,
+    uid: str,
+    partstat: str,
+    attendee: str | None,
+    recurrence_id: date | datetime | None,
+) -> tuple[bytes | None, dict[str, Any] | None]:
+    calendar = icalendar.Calendar.from_ical(calendar_data)
+    component = _select_rsvp_event(calendar, uid=uid, recurrence_id=recurrence_id)
+    if component is None and recurrence_id is not None:
+        master = _find_master_event(calendar, uid)
+        if master is not None:
+            component = _build_rsvp_recurrence_override(master, recurrence_id)
+            calendar.add_component(component)
+    if component is None:
+        return None, {"error": f"Event not found: {uid}", "uid": uid}
+
+    attendees = _component_attendees(component)
+    if not attendees:
+        return None, {"error": "Event has no attendees to RSVP as", "uid": uid}
+
+    target = _normalize_calendar_address(attendee) if attendee else None
+    if target is None and len(attendees) == 1:
+        selected = attendees[0]
+    elif target is not None:
+        selected = next((item for item in attendees if _attendee_matches(item, target)), None)
+        if selected is None:
+            return None, {"error": f"Attendee not found on event: {attendee}", "uid": uid}
+    else:
+        return None, {
+            "error": "attendee is required when an event has multiple attendees",
+            "uid": uid,
+        }
+
+    selected.params["PARTSTAT"] = partstat
+    return calendar.to_ical(), None
 
 
 def _build_event_component(
@@ -628,6 +757,95 @@ async def update_event(
     return result
 
 
+async def rsvp_event(
+    config: CalDAVConfig,
+    *,
+    uid: str,
+    partstat: str,
+    calendar_slug: str | None = None,
+    attendee: str | None = None,
+    recurrence_id: str | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Update this user's attendee status while preserving Nextcloud scheduling context."""
+    event_uid = _validate_uid_text(uid, "uid")
+    normalized_partstat = _normalize_partstat(partstat)
+    parsed_recurrence_id = (
+        _parse_recurrence_id(recurrence_id) if recurrence_id is not None else None
+    )
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    discovered_slug: str | None = None
+    try:
+        if calendar_slug is not None:
+            safe_slug = _validate_path_segment(calendar_slug, "calendar_slug")
+            resource = await _find_event_resource_by_uid(
+                config,
+                safe_slug,
+                event_uid,
+                client=client,
+            )
+        else:
+            resource = None
+            safe_slug = None
+            for calendar in await list_calendars(config, http_client=client):
+                if calendar.get("subscribed"):
+                    continue
+                candidate_slug = str(calendar.get("slug") or "")
+                if not candidate_slug:
+                    continue
+                resource = await _find_event_resource_by_uid(
+                    config,
+                    candidate_slug,
+                    event_uid,
+                    client=client,
+                )
+                if resource is not None:
+                    safe_slug = candidate_slug
+                    discovered_slug = candidate_slug
+                    break
+        if resource is None:
+            return {"error": f"Event not found: {event_uid}", "uid": event_uid}
+
+        body, error = _update_attendee_partstat(
+            resource.calendar_data,
+            uid=event_uid,
+            attendee=attendee,
+            partstat=normalized_partstat,
+            recurrence_id=parsed_recurrence_id,
+        )
+        if error is not None:
+            return error
+        assert body is not None
+
+        response = await client.put(
+            resource.href,
+            content=body,
+            headers={
+                "Authorization": _auth_header(config),
+                "Content-Type": "text/calendar; charset=utf-8",
+                "If-Match": "*",
+            },
+        )
+        response.raise_for_status()
+    finally:
+        if own_client:
+            await client.aclose()
+
+    result: dict[str, Any] = {
+        "uid": event_uid,
+        "href": resource.href,
+        "partstat": normalized_partstat,
+        "updated": True,
+    }
+    if discovered_slug is not None:
+        result["calendar_slug"] = discovered_slug
+    if parsed_recurrence_id is not None:
+        result["recurrence_id"] = _format_ical_value(parsed_recurrence_id)
+    return result
+
+
 async def delete_event(
     config: CalDAVConfig,
     *,
@@ -698,5 +916,6 @@ __all__ = [
     "delete_event",
     "fetch_events",
     "list_calendars",
+    "rsvp_event",
     "update_event",
 ]
