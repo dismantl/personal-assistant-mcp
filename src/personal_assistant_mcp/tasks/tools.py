@@ -17,6 +17,7 @@ from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
+from ..tool_errors import surface_tool_errors
 from . import crud, planner
 from .crud import MoveResult, MutationResult, TaskRef
 from .paths import normalize_vault_path, resolve_move_destination
@@ -84,6 +85,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     """
 
     @mcp.tool()
+    @surface_tool_errors("tasks_list")
     async def tasks_list(
         folder: str | None = None,
         priority_bucket: str | None = None,
@@ -108,6 +110,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return {"tasks": [_serialize_task_ref(r) for r in refs]}
 
     @mcp.tool()
+    @surface_tool_errors("tasks_search")
     async def tasks_search(query: str, folder: str | None = None) -> dict[str, Any]:
         """Substring-search open tasks (case-insensitive)."""
         refs = await crud.search_tasks(
@@ -118,6 +121,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return {"tasks": [_serialize_task_ref(r) for r in refs]}
 
     @mcp.tool()
+    @surface_tool_errors("tasks_add")
     async def tasks_add(
         text: str,
         file_path: str,
@@ -151,6 +155,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return _serialize_task_ref(ref)
 
     @mcp.tool()
+    @surface_tool_errors("tasks_complete")
     async def tasks_complete(
         file_path: str,
         task_id: str | None = None,
@@ -162,6 +167,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return _serialize_mutation(result)
 
     @mcp.tool()
+    @surface_tool_errors("tasks_uncomplete")
     async def tasks_uncomplete(
         file_path: str,
         task_id: str | None = None,
@@ -173,6 +179,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return _serialize_mutation(result)
 
     @mcp.tool()
+    @surface_tool_errors("tasks_update")
     async def tasks_update(
         file_path: str,
         task_id: str | None = None,
@@ -201,6 +208,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return _serialize_mutation(result)
 
     @mcp.tool()
+    @surface_tool_errors("tasks_delete")
     async def tasks_delete(
         file_path: str,
         task_id: str | None = None,
@@ -212,6 +220,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return _serialize_mutation(result)
 
     @mcp.tool()
+    @surface_tool_errors("tasks_render_planner")
     async def tasks_render_planner(spec_path: str = planner.DEFAULT_SPEC_PATH) -> dict[str, Any]:
         """Render the TODO planner view from its frontmatter spec.
 
@@ -236,6 +245,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         }
 
     @mcp.tool()
+    @surface_tool_errors("tasks_move")
     async def tasks_move(
         source_path: str,
         dest_path: str,

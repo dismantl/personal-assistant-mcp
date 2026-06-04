@@ -35,6 +35,7 @@ from .freshrss import tools as freshrss_tools
 from .proton import tools as proton_tools
 from .release import tools as release_tools
 from .tasks import tools as tasks_tools
+from .tool_errors import surface_tool_errors
 from .vault import build_vault_client
 from .weekly import tools as weekly_tools
 
@@ -134,6 +135,7 @@ mcp = FastMCP("personal-assistant", **_server_kwargs)
 
 
 @mcp.tool()
+@surface_tool_errors("health")
 async def health() -> dict:
     """Return server health status. Useful as a runtime smoke test."""
     return {

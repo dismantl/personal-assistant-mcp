@@ -8,6 +8,7 @@ from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
+from ..tool_errors import surface_tool_errors
 from . import note as daily_note
 
 
@@ -24,16 +25,19 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     """Attach daily-note tools to the FastMCP server."""
 
     @mcp.tool()
+    @surface_tool_errors("daily_create_today")
     async def daily_create_today() -> dict[str, Any]:
         """Create today's daily note from the template if absent. Idempotent."""
         return await daily_note.ensure_today_note(get_vault())
 
     @mcp.tool()
+    @surface_tool_errors("daily_template")
     async def daily_template() -> dict[str, Any]:
         """Return the daily-note template body."""
         return {"content": await daily_note.get_template(get_vault())}
 
     @mcp.tool()
+    @surface_tool_errors("daily_read_today")
     async def daily_read_today() -> dict[str, Any] | None:
         """Read today's daily note. Returns ``None`` if it does not exist."""
         from ..tasks.paths import today_in_vault_tz
@@ -41,6 +45,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return await daily_note.read_daily(get_vault(), today_in_vault_tz())
 
     @mcp.tool()
+    @surface_tool_errors("daily_read")
     async def daily_read(target_date: str) -> dict[str, Any] | None:
         """Read a specific daily note by ISO date."""
         parsed = _parse_date(target_date, "target_date")
@@ -49,12 +54,14 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return await daily_note.read_daily(get_vault(), parsed)
 
     @mcp.tool()
+    @surface_tool_errors("daily_read_recent")
     async def daily_read_recent(n: int = 7) -> dict[str, Any]:
         """Return up to ``n`` most recent daily notes (newest first)."""
         notes = await daily_note.read_recent_dailies(get_vault(), n=n)
         return {"notes": notes}
 
     @mcp.tool()
+    @surface_tool_errors("daily_write_today")
     async def daily_write_today(content: str, preserve_append_only: bool = True) -> dict[str, Any]:
         """Overwrite today's daily note with ``content``.
 
@@ -69,6 +76,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         )
 
     @mcp.tool()
+    @surface_tool_errors("daily_append_log")
     async def daily_append_log(project: str, description: str) -> dict[str, Any]:
         """Append a ``- HH:MM — Project: description`` entry to today's Log section.
 
@@ -77,6 +85,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return await daily_note.append_log(get_vault(), project, description)
 
     @mcp.tool()
+    @surface_tool_errors("daily_append_inbox")
     async def daily_append_inbox(
         text: str,
         priority: str | None = None,
@@ -97,6 +106,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         )
 
     @mcp.tool()
+    @surface_tool_errors("daily_archive_old")
     async def daily_archive_old(days: int = 30) -> dict[str, Any]:
         """Move daily notes older than ``days`` and outside the current month into the archive.
 

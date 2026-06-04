@@ -8,6 +8,7 @@ from typing import Any
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
+from ..tool_errors import surface_tool_errors
 from . import review
 
 
@@ -24,11 +25,13 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     """Attach weekly-review tools to the FastMCP server."""
 
     @mcp.tool()
+    @surface_tool_errors("weekly_latest")
     async def weekly_latest(include_today: bool = True) -> dict[str, Any] | None:
         """Return the most recent weekly review note, or ``None`` if none exist."""
         return await review.read_latest_weekly(get_vault(), include_today=include_today)
 
     @mcp.tool()
+    @surface_tool_errors("weekly_read")
     async def weekly_read(target_date: str) -> dict[str, Any] | None:
         """Read a specific weekly review by ISO date."""
         parsed = _parse_date(target_date, "target_date")
@@ -37,6 +40,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         return await review.read_weekly(get_vault(), parsed)
 
     @mcp.tool()
+    @surface_tool_errors("weekly_write_current")
     async def weekly_write_current(content: str) -> dict[str, Any]:
         """Write or overwrite this week's review at ``0 Logs/Weekly Reviews/<today>.md``."""
         return await review.write_current_weekly(get_vault(), content)
