@@ -33,16 +33,19 @@ class FakeVaultClient:
       tests (which treat frontmatter as opaque config) but won't catch a
       regression where the planner starts reading note body alongside
       frontmatter.
-    - ``read_note`` returns ``None`` for missing files; the real client raises
-      ``ValueError`` if a doc exists but has missing chunks. The chunk-corrupt
-      failure mode is not exercised here.
+    - ``read_note`` returns ``None`` for missing files. Tests can populate
+      ``read_errors`` when they need to model upstream read failures such as
+      missing LiveSync chunks.
     """
 
     notes: dict[str, str] = field(default_factory=dict)
     frontmatters: dict[str, dict[str, Any]] = field(default_factory=dict)
+    read_errors: dict[str, Exception] = field(default_factory=dict)
     writes: list[tuple[str, str]] = field(default_factory=list)
 
     async def read_note(self, path: str) -> NoteContent | None:
+        if path in self.read_errors:
+            raise self.read_errors[path]
         if path not in self.notes:
             return None
         content = self.notes[path]

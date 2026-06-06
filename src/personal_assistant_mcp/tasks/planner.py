@@ -43,6 +43,7 @@ Spec schema (example frontmatter)::
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,6 +56,7 @@ from .model import Task
 from .render import render_task
 
 DEFAULT_SPEC_PATH = "TODO.md"
+logger = logging.getLogger(__name__)
 
 _INLINE_TAG_RE = re.compile(r"(?<!\w)(#[\w/-]+)(?!\w)")
 
@@ -251,7 +253,11 @@ async def _all_notes(vault: ObsidianVaultClient) -> list[Any]:
 async def _is_tag_excluded(vault: ObsidianVaultClient, path: str, excluded: frozenset[str]) -> bool:
     if not excluded:
         return False
-    note = await vault.read_note(path)
+    try:
+        note = await vault.read_note(path)
+    except ValueError as exc:
+        logger.warning("Skipping unreadable planner note %s: %s", path, exc)
+        return True
     if note is None:
         return False
     found_tags = set(_INLINE_TAG_RE.findall(note.content))
