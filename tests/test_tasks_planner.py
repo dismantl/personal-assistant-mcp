@@ -238,6 +238,22 @@ async def test_render_planner_omits_empty_folder_children(
         assert by_title["empty"].refs == ()
 
 
+async def test_render_planner_skips_unreadable_note(
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
+    fake_vault.notes["0 Logs/2026-06-03.md"] = "- [ ] visible task\n"
+    fake_vault.notes["0 Logs/2026-06-04.md"] = "- [ ] hidden task\n"
+    fake_vault.read_errors["0 Logs/2026-06-04.md"] = ValueError(
+        "Missing 1 chunk(s) for 0 Logs/2026-06-04.md after 4 attempt(s): ['h:bad']"
+    )
+
+    output = await render_planner(fake_vault)
+
+    all_bodies = [r.task.body for s in output.sections for r in s.refs]
+    assert all_bodies == ["visible task"]
+
+
 # -----------------------------------------------------------------------------
 # PlannerOutput.to_markdown
 # -----------------------------------------------------------------------------

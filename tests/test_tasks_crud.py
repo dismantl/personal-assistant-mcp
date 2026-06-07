@@ -135,6 +135,20 @@ async def test_list_tasks_paginates_through_large_vault(
     assert len(refs) == 250
 
 
+async def test_list_tasks_skips_unreadable_note(
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.notes["0 Logs/2026-06-03.md"] = "- [ ] visible task\n"
+    fake_vault.notes["0 Logs/2026-06-04.md"] = "- [ ] hidden task\n"
+    fake_vault.read_errors["0 Logs/2026-06-04.md"] = ValueError(
+        "Missing 1 chunk(s) for 0 Logs/2026-06-04.md after 4 attempt(s): ['h:bad']"
+    )
+
+    refs = await list_tasks(fake_vault)
+
+    assert [r.task.body for r in refs] == ["visible task"]
+
+
 # -----------------------------------------------------------------------------
 # search_tasks
 # -----------------------------------------------------------------------------

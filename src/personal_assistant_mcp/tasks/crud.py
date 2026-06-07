@@ -9,6 +9,7 @@ so callers can surface a warning.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date
@@ -29,6 +30,7 @@ _BUCKET_TO_EMOJI: dict[str, str] = {
 
 # Folders that never host task content and should be skipped during list operations.
 _SKIP_PATH_FRAGMENTS: tuple[str, ...] = ("4 Archives", "/attachments/")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -91,9 +93,13 @@ class TaskMoveConflict(Exception):
 async def read_tasks(vault: ObsidianVaultClient, file_path: str) -> list[Task]:
     """Return all tasks in a single file with ``line_number`` populated.
 
-    Returns an empty list if the file does not exist.
+    Returns an empty list if the file does not exist or cannot be reassembled.
     """
-    note = await vault.read_note(file_path)
+    try:
+        note = await vault.read_note(file_path)
+    except ValueError as exc:
+        logger.warning("Skipping unreadable task note %s: %s", file_path, exc)
+        return []
     if note is None:
         return []
     return _parse_lines(note.content)
