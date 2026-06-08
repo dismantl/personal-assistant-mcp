@@ -3,14 +3,12 @@
 Transport: stdio by default, or streamable-http when ``MCP_TRANSPORT=streamable-http``.
 In HTTP mode ``MCP_API_KEY`` is **required**; the server refuses to start an
 unauthenticated HTTP listener because exposed tools can have side effects on
-the configured vault, mail, or calendar.
+the configured vault, RSS reader, or calendar.
 
 The vault client is constructed lazily on the first tool that needs it and
 closed cleanly on server shutdown via the FastMCP lifespan hook.
 
-Generic email operations should be handled by a dedicated email MCP server when
-needed. This server can expose its original Proton tools as legacy
-compatibility; set ``ENABLE_LEGACY_EMAIL_TOOLS=true`` exactly to register them.
+Email operations should be handled by a dedicated email MCP server when needed.
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ from .daily import note as daily_note
 from .daily import tools as daily_tools
 from .digests import tools as digests_tools
 from .freshrss import tools as freshrss_tools
-from .proton import tools as proton_tools
 from .release import tools as release_tools
 from .tasks import tools as tasks_tools
 from .tool_errors import surface_tool_errors
@@ -45,16 +42,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _env_bool(name: str, *, default: bool) -> bool:
-    """Parse an opt-in boolean env var without enabling on typos."""
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value == "true"
-
-
 _transport = os.environ.get("MCP_TRANSPORT", "stdio")
-_legacy_email_tools_enabled = _env_bool("ENABLE_LEGACY_EMAIL_TOOLS", default=False)
 _server_kwargs: dict = {}
 _api_key = ""
 
@@ -142,7 +130,6 @@ async def health() -> dict:
         "status": "ok",
         "service": "personal-assistant-mcp",
         "transport": _transport,
-        "legacy_email_tools_enabled": _legacy_email_tools_enabled,
     }
 
 
@@ -153,8 +140,6 @@ digests_tools.register(mcp, _get_vault)
 release_tools.register(mcp, _get_vault)
 freshrss_tools.register(mcp)
 calendar_tools.register(mcp)
-if _legacy_email_tools_enabled:
-    proton_tools.register(mcp)
 
 
 @mcp.custom_route("/inbox", methods=["POST"], include_in_schema=True)
