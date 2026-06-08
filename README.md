@@ -1,21 +1,20 @@
 # personal-assistant-mcp
 
 MCP server for personal-assistant tasks: Obsidian tasks/notes/digests,
-FreshRSS, CalDAV, and optional legacy mail compatibility.
+FreshRSS, and CalDAV.
 
-Companion to [obsidian-livesync-mcp](https://github.com/dismantl/obsidian-livesync-mcp): this server imports `obsidian-livesync-mcp`'s vault client to handle Obsidian operations, and adds higher-level tools for daily-note management, task routing, weekly reviews, RSS/release digests, and optional legacy mail compatibility.
+Companion to [obsidian-livesync-mcp](https://github.com/dismantl/obsidian-livesync-mcp): this server imports `obsidian-livesync-mcp`'s vault client to handle Obsidian operations, and adds higher-level tools for daily-note management, task routing, weekly reviews, RSS/release digests, and calendars.
 
 ## Status
 
 Alpha. The server includes MCP tools across tasks, daily/weekly notes, digests,
-FreshRSS, CalDAV, release-state tracking, and optional legacy mail compatibility.
+FreshRSS, CalDAV, and release-state tracking.
 It can run over stdio for local MCP clients or authenticated streamable HTTP
 for hosted use.
 
 Generic email search, replies, folder moves, read/unread state, and attachment
 workflows are out of scope for this server. Use a dedicated email MCP server
-for mail operations. This project retains a small legacy compatibility surface
-for older deployments, but those tools are hidden unless explicitly enabled.
+for mail operations.
 
 ## Exposed tools
 
@@ -150,12 +149,10 @@ ruff format --check src/ tests/
 | `MCP_PORT` | `8080` | HTTP port (streamable-http only) |
 | `MCP_API_KEY` | (none) | Bearer token; **required** for HTTP mode — server refuses to start without it |
 | `MCP_RESOURCE_URL` | `http://localhost:$MCP_PORT` | Auth issuer/resource URL |
-| `ENABLE_LEGACY_EMAIL_TOOLS` | `false` | Register legacy mail compatibility tools only when set exactly to `true`. |
-| `PROTON_AI_SEND_FROM_ADDRESS` | (none) | Sender address for legacy AI mail sends; required when those tools send mail. |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 
 Subsequent phases add env vars for CouchDB (vault access), FreshRSS, CalDAV,
-and optional legacy mail compatibility.
+and related integrations.
 
 ## License
 

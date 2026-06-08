@@ -41,12 +41,12 @@ async def test_health_returns_ok() -> None:
     assert result["status"] == "ok"
     assert result["service"] == "personal-assistant-mcp"
     assert "transport" in result
-    assert result["legacy_email_tools_enabled"] is False
+    assert "legacy_email_tools_enabled" not in result
 
 
 @pytest.mark.asyncio
 async def test_default_tools_registered_without_legacy_email() -> None:
-    """Core tools register by default, while legacy email tools stay hidden."""
+    """Core tools register by default, with no email tools exposed."""
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
     expected = {
@@ -106,39 +106,8 @@ async def test_tool_errors_include_exception_type_when_exception_message_is_empt
     assert "MCP tool tasks_add failed" in caplog.text
 
 
-def test_legacy_email_tools_can_be_enabled() -> None:
-    """Operators can opt in to the old Proton tools for compatibility."""
-    code = """
-import asyncio
-from personal_assistant_mcp.server import mcp
-
-async def main():
-    tools = await mcp.list_tools()
-    names = {tool.name for tool in tools}
-    assert "health" in names
-    assert "tasks_list" in names
-    assert "email_primary_unread" in names
-    assert "email_ai_send" in names
-
-asyncio.run(main())
-"""
-    env = os.environ.copy()
-    env["ENABLE_LEGACY_EMAIL_TOOLS"] = "true"
-
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        check=False,
-        env=env,
-        text=True,
-        capture_output=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize("env_value", ["", "1", "yes", "enabled", "tru", "TRUE", " true "])
-def test_legacy_email_tools_ignore_non_true_values(env_value: str) -> None:
-    """Only the literal true opt-in exposes the old Proton tools."""
+def test_removed_email_tools_stay_absent_when_old_flag_is_set() -> None:
+    """The retired email opt-in flag must not expose email tools."""
     code = """
 import asyncio
 from personal_assistant_mcp.server import mcp
@@ -154,7 +123,7 @@ async def main():
 asyncio.run(main())
 """
     env = os.environ.copy()
-    env["ENABLE_LEGACY_EMAIL_TOOLS"] = env_value
+    env["ENABLE_LEGACY_EMAIL_TOOLS"] = "true"
 
     result = subprocess.run(
         [sys.executable, "-c", code],
