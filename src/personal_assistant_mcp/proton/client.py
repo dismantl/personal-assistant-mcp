@@ -10,6 +10,7 @@ Env vars (loaded by ``ProtonConfig.from_env``):
 - ``PROTON_SMTP_HOST`` / ``PROTON_SMTP_PORT``
 - ``PROTON_PRIMARY_USER`` / ``PROTON_PRIMARY_PASSWORD``
 - ``PROTON_AI_USER`` / ``PROTON_AI_PASSWORD``
+- ``PROTON_AI_SEND_FROM_ADDRESS``
 
 Proton Bridge serves IMAP / SMTP locally over TLS with a self-signed
 certificate; the SSL context disables hostname / chain verification to match
@@ -53,7 +54,6 @@ VALID_ACCOUNTS = ("primary", "ai")
 _DEFAULT_FETCH_LIMIT = 50
 _UNREAD_WINDOW_DAYS = 7
 _RECENT_WINDOW_DAYS = 3
-_AI_SEND_FROM_ADDRESS = "danstaples@acab.enterprises"
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,7 @@ class ProtonConfig:
     primary_password: str
     ai_user: str
     ai_password: str
+    ai_send_from_address: str
 
     def credentials(self, account: str) -> tuple[str, str]:
         if account == "primary":
@@ -85,6 +86,7 @@ class ProtonConfig:
             primary_password=_required("PROTON_PRIMARY_PASSWORD"),
             ai_user=_required("PROTON_AI_USER"),
             ai_password=_required("PROTON_AI_PASSWORD"),
+            ai_send_from_address=_required("PROTON_AI_SEND_FROM_ADDRESS"),
         )
         _assert_bridge_local(config.imap_host, "PROTON_IMAP_HOST")
         _assert_bridge_local(config.smtp_host, "PROTON_SMTP_HOST")
@@ -277,7 +279,7 @@ def _send_message_sync(
     config: ProtonConfig, to_addr: str, subject: str, body: str
 ) -> dict[str, Any]:
     message = MIMEText(body)
-    message["From"] = _AI_SEND_FROM_ADDRESS
+    message["From"] = config.ai_send_from_address
     message["To"] = to_addr
     message["Subject"] = subject
     with smtplib.SMTP(config.smtp_host, config.smtp_port) as smtp:
@@ -288,7 +290,7 @@ def _send_message_sync(
         "success": True,
         "to": to_addr,
         "subject": subject,
-        "from": _AI_SEND_FROM_ADDRESS,
+        "from": config.ai_send_from_address,
         "account": "ai",
     }
 

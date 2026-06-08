@@ -31,6 +31,7 @@ _CONFIG = ProtonConfig(
     primary_password="primary-pw",
     ai_user="ai@example",
     ai_password="ai-pw",
+    ai_send_from_address="assistant@example.test",
 )
 _FIXED_NOW = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -80,12 +81,31 @@ def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PROTON_PRIMARY_PASSWORD", "pp")
     monkeypatch.setenv("PROTON_AI_USER", "a")
     monkeypatch.setenv("PROTON_AI_PASSWORD", "ap")
+    monkeypatch.setenv("PROTON_AI_SEND_FROM_ADDRESS", "assistant@example.test")
     config = ProtonConfig.from_env()
     assert config.imap_host == "127.0.0.1"
     assert config.imap_port == 1143
     assert config.smtp_host == "localhost"
     assert config.smtp_port == 1025
     assert config.primary_user == "p"
+    assert config.ai_send_from_address == "assistant@example.test"
+
+
+def test_config_from_env_requires_ai_send_from_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROTON_IMAP_HOST", "127.0.0.1")
+    monkeypatch.setenv("PROTON_IMAP_PORT", "1143")
+    monkeypatch.setenv("PROTON_SMTP_HOST", "localhost")
+    monkeypatch.setenv("PROTON_SMTP_PORT", "1025")
+    monkeypatch.setenv("PROTON_PRIMARY_USER", "p")
+    monkeypatch.setenv("PROTON_PRIMARY_PASSWORD", "pp")
+    monkeypatch.setenv("PROTON_AI_USER", "a")
+    monkeypatch.setenv("PROTON_AI_PASSWORD", "ap")
+    monkeypatch.delenv("PROTON_AI_SEND_FROM_ADDRESS", raising=False)
+
+    with pytest.raises(ValueError, match="PROTON_AI_SEND_FROM_ADDRESS"):
+        ProtonConfig.from_env()
 
 
 def test_credentials_dispatches_by_account() -> None:
@@ -128,6 +148,7 @@ def test_proton_config_from_env_rejects_non_local_bridge(
     monkeypatch.setenv("PROTON_PRIMARY_PASSWORD", "pp")
     monkeypatch.setenv("PROTON_AI_USER", "a")
     monkeypatch.setenv("PROTON_AI_PASSWORD", "ap")
+    monkeypatch.setenv("PROTON_AI_SEND_FROM_ADDRESS", "assistant@example.test")
     with pytest.raises(ValueError, match="MITM-exposed"):
         ProtonConfig.from_env()
 
@@ -301,13 +322,13 @@ async def test_send_message_ai_uses_smtp_correctly() -> None:
         result = await send_message_ai(_CONFIG, "to@example", "Test subject", "Hello world")
     assert result["success"] is True
     assert result["to"] == "to@example"
-    assert result["from"] == "danstaples@acab.enterprises"
+    assert result["from"] == "assistant@example.test"
     mock_smtp_class.assert_called_once_with("127.0.0.1", 1025)
     mock_smtp_instance.starttls.assert_called_once()
     mock_smtp_instance.login.assert_called_once_with("ai@example", "ai-pw")
     mock_smtp_instance.send_message.assert_called_once()
     sent_message = mock_smtp_instance.send_message.call_args.args[0]
-    assert sent_message["From"] == "danstaples@acab.enterprises"
+    assert sent_message["From"] == "assistant@example.test"
 
 
 async def test_send_message_rejects_empty_fields() -> None:

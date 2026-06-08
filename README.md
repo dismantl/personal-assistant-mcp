@@ -151,6 +151,7 @@ ruff format --check src/ tests/
 | `MCP_API_KEY` | (none) | Bearer token; **required** for HTTP mode — server refuses to start without it |
 | `MCP_RESOURCE_URL` | `http://localhost:$MCP_PORT` | Auth issuer/resource URL |
 | `ENABLE_LEGACY_EMAIL_TOOLS` | `false` | Register legacy mail compatibility tools only when set exactly to `true`. |
+| `PROTON_AI_SEND_FROM_ADDRESS` | (none) | Sender address for legacy AI mail sends; required when those tools send mail. |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 
 Subsequent phases add env vars for CouchDB (vault access), FreshRSS, CalDAV,
