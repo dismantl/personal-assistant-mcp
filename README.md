@@ -120,24 +120,23 @@ invitation response.
 ## Quick start
 
 ```bash
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv sync
 
 # Stdio transport (for MCP Inspector / Claude Code local)
-python -m personal_assistant_mcp.server
+uv run python -m personal_assistant_mcp.server
 
 # Streamable HTTP (production)
 MCP_TRANSPORT=streamable-http \
     MCP_API_KEY=$(openssl rand -hex 32) \
-    python -m personal_assistant_mcp.server
+    uv run python -m personal_assistant_mcp.server
 ```
 
 ## Development
 
 ```bash
-pytest tests/ -v
-ruff check src/ tests/
-ruff format --check src/ tests/
+uv run pytest tests/ -v
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
 ```
 
 ## Environment
