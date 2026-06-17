@@ -43,11 +43,13 @@ Spec schema (example frontmatter)::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
 from ..vault import iter_all_notes
@@ -56,6 +58,8 @@ from .model import Task
 from .render import render_task
 
 DEFAULT_SPEC_PATH = "TODO.md"
+DEFAULT_RENDER_RETRY_ATTEMPTS = 3
+DEFAULT_RENDER_RETRY_DELAY_SECONDS = 0.5
 logger = logging.getLogger(__name__)
 
 _INLINE_TAG_RE = re.compile(r"(?<!\w)(#[\w/-]+)(?!\w)")
@@ -100,6 +104,10 @@ class PlannerSpec:
     priority_buckets: dict[str, frozenset[str]]
     include_statuses: tuple[str, ...]
     sections: tuple[_SectionConfig, ...]
+
+
+class TransientPlannerRenderError(RuntimeError):
+    """Raised when transient vault transport failures outlast render retries."""
 
 
 # -----------------------------------------------------------------------------
@@ -220,6 +228,16 @@ def _parse_section(raw: dict[str, Any]) -> _SectionConfig:
 
 async def _enumerate_source_notes(vault: ObsidianVaultClient, spec: PlannerSpec) -> list[str]:
     """Return vault-relative paths of notes matching the spec's source rules."""
+    if _can_enumerate_by_root_folder(spec):
+        paths_by_root: dict[str, None] = {}
+        for root in spec.roots:
+            for meta in await iter_all_notes(vault, folder=root):
+                path = meta.path
+                if any(frag in path for frag in spec.exclude_paths_containing):
+                    continue
+                paths_by_root.setdefault(path, None)
+        return list(paths_by_root)
+
     metas = await _all_notes(vault)
     out: list[str] = []
     for meta in metas:
@@ -230,6 +248,17 @@ async def _enumerate_source_notes(vault: ObsidianVaultClient, spec: PlannerSpec)
             continue
         out.append(path)
     return out
+
+
+def _can_enumerate_by_root_folder(spec: PlannerSpec) -> bool:
+    """Return true when source roots can use bounded folder-prefix list calls."""
+    if not spec.roots or spec.basename_matches_ci:
+        return False
+    for root in spec.roots:
+        basename = root.rstrip("/").rsplit("/", 1)[-1]
+        if "." in basename:
+            return False
+    return True
 
 
 def _matches_source(path: str, spec: PlannerSpec) -> bool:
@@ -328,8 +357,42 @@ async def load_planner_spec(
 async def render_planner(
     vault: ObsidianVaultClient,
     spec_path: str = DEFAULT_SPEC_PATH,
+    *,
+    retry_attempts: int = DEFAULT_RENDER_RETRY_ATTEMPTS,
+    retry_delay_seconds: float = DEFAULT_RENDER_RETRY_DELAY_SECONDS,
 ) -> PlannerOutput:
     """Render the planner view by walking source files and bucketing tasks per spec."""
+    attempts = max(1, retry_attempts)
+    delay = max(0.0, retry_delay_seconds)
+    last_transient: httpx.TransportError | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _render_planner_once(vault, spec_path=spec_path)
+        except httpx.TransportError as exc:
+            last_transient = exc
+            if attempt >= attempts:
+                break
+            logger.warning(
+                "Transient planner render vault transport failure on attempt %s/%s: %s",
+                attempt,
+                attempts,
+                exc,
+            )
+            if delay:
+                await asyncio.sleep(delay)
+
+    raise TransientPlannerRenderError(
+        "planner render failed after "
+        f"{attempts} transient vault read attempt(s); use existing planner cache if available"
+    ) from last_transient
+
+
+async def _render_planner_once(
+    vault: ObsidianVaultClient,
+    spec_path: str = DEFAULT_SPEC_PATH,
+) -> PlannerOutput:
+    """Render the planner once without retrying transient vault transport failures."""
     spec = await load_planner_spec(vault, spec_path)
     candidates = await _enumerate_source_notes(vault, spec)
 
@@ -384,6 +447,7 @@ __all__ = [
     "PlannerOutput",
     "PlannerSection",
     "PlannerSpec",
+    "TransientPlannerRenderError",
     "load_planner_spec",
     "parse_spec",
     "render_planner",

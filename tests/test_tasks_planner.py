@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from personal_assistant_mcp.tasks.planner import (
     PlannerOutput,
     PlannerSection,
     PlannerSpec,
+    TransientPlannerRenderError,
     load_planner_spec,
     parse_spec,
     render_planner,
@@ -75,6 +77,36 @@ def _planner_spec_fm() -> dict:
             },
         ],
     }
+
+
+class FlakyListNotesVault(FakeVaultClient):
+    """Fake vault that can raise transient list errors before succeeding."""
+
+    def __init__(self, *, failures_before_success: int | None) -> None:
+        super().__init__()
+        self.failures_before_success = failures_before_success
+        self.list_notes_calls = 0
+
+    async def list_notes(self, folder: str | None = None, limit: int = 50, skip: int = 0):
+        self.list_notes_calls += 1
+        if (
+            self.failures_before_success is None
+            or self.list_notes_calls <= self.failures_before_success
+        ):
+            raise httpx.ReadError("planner stream reset")
+        return await super().list_notes(folder=folder, limit=limit, skip=skip)
+
+
+class RecordingListNotesVault(FakeVaultClient):
+    """Fake vault that records folder filters used by planner enumeration."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_note_folders: list[str | None] = []
+
+    async def list_notes(self, folder: str | None = None, limit: int = 50, skip: int = 0):
+        self.list_note_folders.append(folder)
+        return await super().list_notes(folder=folder, limit=limit, skip=skip)
 
 
 # -----------------------------------------------------------------------------
@@ -252,6 +284,48 @@ async def test_render_planner_skips_unreadable_note(
 
     all_bodies = [r.task.body for s in output.sections for r in s.refs]
     assert all_bodies == ["visible task"]
+
+
+async def test_render_planner_retries_transient_list_notes_failure() -> None:
+    fake_vault = FlakyListNotesVault(failures_before_success=1)
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
+    fake_vault.notes["0 Logs/2026-06-17.md"] = "- [ ] survives retry\n"
+
+    output = await render_planner(fake_vault, retry_delay_seconds=0)
+
+    all_bodies = [r.task.body for s in output.sections for r in s.refs]
+    assert all_bodies == ["survives retry"]
+    assert fake_vault.list_notes_calls == 2
+
+
+async def test_render_planner_exhausted_transient_errors_preserve_existing_cache_hint() -> None:
+    fake_vault = FlakyListNotesVault(failures_before_success=None)
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
+    fake_vault.notes["0 Logs/2026-06-17.md"] = "- [ ] hidden by failures\n"
+
+    with pytest.raises(TransientPlannerRenderError, match="existing planner cache"):
+        await render_planner(fake_vault, retry_delay_seconds=0)
+
+    assert fake_vault.list_notes_calls == 3
+
+
+async def test_render_planner_uses_folder_filters_for_root_only_specs() -> None:
+    fake_vault = RecordingListNotesVault()
+    spec = _planner_spec_fm()
+    spec["sourceSelection"]["include"] = {
+        "roots": ["1 Projects", "2 Areas"],
+        "basenamesCaseInsensitive": [],
+    }
+    fake_vault.frontmatters["TODO.md"] = spec
+    fake_vault.notes["1 Projects/example/todo.md"] = "- [ ] project task\n"
+    fake_vault.notes["2 Areas/health/todo.md"] = "- [ ] area task\n"
+    fake_vault.notes["9 Elsewhere/todo.md"] = "- [ ] should not be scanned\n"
+
+    output = await render_planner(fake_vault, retry_delay_seconds=0)
+
+    all_bodies = {r.task.body for s in output.sections for r in s.refs}
+    assert all_bodies == {"project task", "area task"}
+    assert fake_vault.list_note_folders == ["1 Projects", "2 Areas"]
 
 
 # -----------------------------------------------------------------------------
