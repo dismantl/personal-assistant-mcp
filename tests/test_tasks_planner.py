@@ -10,6 +10,7 @@ from personal_assistant_mcp.tasks.planner import (
     PlannerSection,
     PlannerSpec,
     TransientPlannerRenderError,
+    collect_source_tasks,
     load_planner_spec,
     parse_spec,
     render_planner,
@@ -253,6 +254,23 @@ async def test_render_planner_excludes_done_and_cancelled(
     )
     output = await render_planner(fake_vault)
     all_bodies = {r.task.body for s in output.sections for r in s.refs}
+    assert all_bodies == {"open", "in_progress"}
+
+
+async def test_collect_source_tasks_keeps_all_statuses_while_render_filters(
+    fake_vault: FakeVaultClient,
+) -> None:
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
+    fake_vault.notes["0 Logs/today.md"] = (
+        "- [ ] open\n- [x] done\n- [-] cancelled\n- [/] in_progress\n"
+    )
+    spec = await load_planner_spec(fake_vault)
+
+    tasks_by_path = await collect_source_tasks(fake_vault, spec)
+    output = await render_planner(fake_vault)
+
+    assert [task.status for task in tasks_by_path["0 Logs/today.md"]] == [" ", "x", "-", "/"]
+    all_bodies = {r.task.body for section in output.sections for r in section.refs}
     assert all_bodies == {"open", "in_progress"}
 
 

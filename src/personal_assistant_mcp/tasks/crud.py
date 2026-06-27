@@ -16,7 +16,6 @@ from datetime import date
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
-from ..vault import iter_all_notes
 from .model import Task
 from .parse import PRIORITY_EMOJI, parse_task
 from .paths import daily_note_date_from_path, is_daily_note_path, today_in_vault_tz
@@ -28,8 +27,6 @@ _BUCKET_TO_EMOJI: dict[str, str] = {
     "low": "\U0001f53d",  # 🔽
 }
 
-# Folders that never host task content and should be skipped during list operations.
-_SKIP_PATH_FRAGMENTS: tuple[str, ...] = ("4 Archives", "/attachments/")
 logger = logging.getLogger(__name__)
 
 
@@ -103,61 +100,6 @@ async def read_tasks(vault: ObsidianVaultClient, file_path: str) -> list[Task]:
     if note is None:
         return []
     return _parse_lines(note.content)
-
-
-async def list_tasks(
-    vault: ObsidianVaultClient,
-    *,
-    folder: str | None = None,
-    priority_bucket: str | None = None,
-    statuses: tuple[str, ...] = (" ", "/"),
-    due_before: date | None = None,
-) -> list[TaskRef]:
-    """List tasks across the vault, with optional filters.
-
-    Args:
-        folder: vault-relative folder prefix to restrict listing.
-        priority_bucket: ``"high"``, ``"medium"``, or ``"low"``. ``None`` = any bucket.
-        statuses: accepted status characters. Defaults to open (``" "``) + in-progress (``"/"``).
-        due_before: include only tasks with a due date strictly before this date.
-    """
-    out: list[TaskRef] = []
-    for meta in await _enumerate_notes(vault, folder):
-        if _should_skip_path(meta.path):
-            continue
-        for task in await read_tasks(vault, meta.path):
-            if task.status not in statuses:
-                continue
-            if priority_bucket is not None and task.priority_bucket != priority_bucket:
-                continue
-            if due_before is not None and (task.due is None or task.due >= due_before):
-                continue
-            out.append(TaskRef(meta.path, task))
-    return out
-
-
-async def search_tasks(
-    vault: ObsidianVaultClient,
-    query: str,
-    *,
-    folder: str | None = None,
-    statuses: tuple[str, ...] = (" ", "/"),
-) -> list[TaskRef]:
-    """Case-insensitive substring search across task bodies."""
-    q = query.strip().lower()
-    if not q:
-        return []
-
-    out: list[TaskRef] = []
-    for meta in await _enumerate_notes(vault, folder):
-        if _should_skip_path(meta.path):
-            continue
-        for task in await read_tasks(vault, meta.path):
-            if task.status not in statuses:
-                continue
-            if q in task.body.lower():
-                out.append(TaskRef(meta.path, task))
-    return out
 
 
 # -----------------------------------------------------------------------------
@@ -561,15 +503,6 @@ def resolve_priority(value: str | None) -> str | None:
     )
 
 
-async def _enumerate_notes(vault: ObsidianVaultClient, folder: str | None) -> list:
-    """Page through ``list_notes`` and return all metadata records."""
-    return await iter_all_notes(vault, folder)
-
-
-def _should_skip_path(path: str) -> bool:
-    return any(fragment in path for fragment in _SKIP_PATH_FRAGMENTS)
-
-
 __all__ = [
     "MoveResult",
     "MutationResult",
@@ -578,11 +511,9 @@ __all__ = [
     "add_task",
     "complete_task",
     "delete_task",
-    "list_tasks",
     "move_task",
     "read_tasks",
     "resolve_priority",
-    "search_tasks",
     "uncomplete_task",
     "update_task",
 ]

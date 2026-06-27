@@ -293,6 +293,24 @@ async def _is_tag_excluded(vault: ObsidianVaultClient, path: str, excluded: froz
     return bool(found_tags & excluded)
 
 
+async def collect_source_tasks(
+    vault: ObsidianVaultClient, spec: PlannerSpec
+) -> dict[str, list[Task]]:
+    """Collect all tasks from files selected by ``spec`` source rules.
+
+    This intentionally keeps every task status. Section assembly applies the
+    spec's status filters later, so cache-backed tools can still query completed
+    or cancelled tasks consistently.
+    """
+    candidates = await _enumerate_source_notes(vault, spec)
+    tasks_by_path: dict[str, list[Task]] = {}
+    for path in candidates:
+        if await _is_tag_excluded(vault, path, spec.exclude_tags):
+            continue
+        tasks_by_path[path] = await read_tasks(vault, path)
+    return tasks_by_path
+
+
 # -----------------------------------------------------------------------------
 # Task filtering and section assembly
 # -----------------------------------------------------------------------------
@@ -394,17 +412,12 @@ async def _render_planner_once(
 ) -> PlannerOutput:
     """Render the planner once without retrying transient vault transport failures."""
     spec = await load_planner_spec(vault, spec_path)
-    candidates = await _enumerate_source_notes(vault, spec)
+    tasks_by_path = await collect_source_tasks(vault, spec)
+    return assemble_sections(spec, tasks_by_path)
 
-    # Resolve tag exclusion lazily — parse content once per candidate
-    tasks_by_path: dict[str, list[Task]] = {}
-    for path in candidates:
-        if await _is_tag_excluded(vault, path, spec.exclude_tags):
-            continue
-        tasks_by_path[path] = [
-            t for t in await read_tasks(vault, path) if t.status in spec.include_statuses
-        ]
 
+def assemble_sections(spec: PlannerSpec, tasks_by_path: dict[str, list[Task]]) -> PlannerOutput:
+    """Assemble planner sections from already-collected task lists."""
     out_sections: list[PlannerSection] = []
     for section_cfg in spec.sections:
         if section_cfg.kind == "static":
@@ -448,6 +461,8 @@ __all__ = [
     "PlannerSection",
     "PlannerSpec",
     "TransientPlannerRenderError",
+    "assemble_sections",
+    "collect_source_tasks",
     "load_planner_spec",
     "parse_spec",
     "render_planner",

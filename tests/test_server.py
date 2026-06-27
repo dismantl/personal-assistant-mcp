@@ -12,10 +12,44 @@ from personal_assistant_mcp import server as server_module
 from personal_assistant_mcp.daily import note as daily_note
 from personal_assistant_mcp.daily.note import DAILY_TEMPLATE_PATH
 from personal_assistant_mcp.server import health, mcp
+from personal_assistant_mcp.tasks.cache import CACHE_PATH
 from tests.conftest import FakeVaultClient
 
 _TODAY_PATH = "0 Logs/2026-05-11.md"
 _TEMPLATE_BODY = "## Priorities\n\n\n## Schedule\n\n\n## Inbox\n\n\n## Reflection\n\n\n## Log\n"
+
+
+def _planner_spec_fm() -> dict:
+    return {
+        "type": "todo-planner-spec",
+        "version": 1,
+        "sourceSelection": {
+            "include": {
+                "roots": ["0 Logs"],
+                "basenamesCaseInsensitive": [],
+            },
+            "exclude": {
+                "pathsContaining": [],
+                "tags": [],
+            },
+        },
+        "priorities": {
+            "buckets": {
+                "high": ["⏫"],
+                "medium": ["\U0001f53c"],
+                "low": ["\U0001f53d"],
+            }
+        },
+        "tasks": {"includeStatuses": [" ", "/"]},
+        "sections": [
+            {
+                "kind": "static",
+                "id": "all",
+                "title": "All",
+                "taskMatch": {},
+            }
+        ],
+    }
 
 
 class BlankWriteFailureVault(FakeVaultClient):
@@ -53,6 +87,7 @@ async def test_default_tools_registered_without_legacy_email() -> None:
         "health",
         "tasks_list",
         "tasks_search",
+        "tasks_compute",
         "tasks_add",
         "tasks_complete",
         "tasks_uncomplete",
@@ -88,6 +123,31 @@ async def test_default_tools_registered_without_legacy_email() -> None:
     }
     assert expected.issubset(names), f"Missing tools: {expected - names}"
     assert not {name for name in names if name.startswith("email_")}
+
+
+@pytest.mark.asyncio
+async def test_task_cache_smoke_via_mcp_call_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_vault = FakeVaultClient()
+    fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
+    fake_vault.notes["0 Logs/cache-smoke.md"] = "- [ ] via mcp\n"
+    monkeypatch.setattr(server_module, "_vault", fake_vault)
+
+    _, computed = await mcp.call_tool("tasks_compute", {})
+    _, listed = await mcp.call_tool("tasks_list", {})
+
+    assert computed["task_count"] == 1
+    assert listed["source"] == "cache"
+    assert listed["computed_at"] == computed["computed_at"]
+    assert [task["body"] for task in listed["tasks"]] == ["via mcp"]
+
+    await mcp.call_tool("tasks_add", {"text": "patched", "file_path": "0 Logs/cache-smoke.md"})
+    _, after_add = await mcp.call_tool("tasks_list", {})
+    assert [task["body"] for task in after_add["tasks"]] == ["via mcp", "patched"]
+
+    fake_vault.notes[CACHE_PATH] = "{corrupt"
+    _, fallback = await mcp.call_tool("tasks_list", {})
+    assert fallback["source"] == "live"
+    assert [task["body"] for task in fallback["tasks"]] == ["via mcp", "patched"]
 
 
 @pytest.mark.asyncio

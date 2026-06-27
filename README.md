@@ -28,8 +28,9 @@ for mail operations.
 
 | Tool | Purpose |
 |---|---|
-| `tasks_list` | List open tasks across the vault, with optional folder, priority, and due-date filters. |
-| `tasks_search` | Search open tasks by case-insensitive substring, optionally within a folder. |
+| `tasks_compute` | Rebuild the task cache from the `TODO.md` planner source-selection spec. |
+| `tasks_list` | List cached or live-fallback tasks from `TODO.md` sources, with optional folder, priority, status, and due-date filters. |
+| `tasks_search` | Search cached or live-fallback open tasks from `TODO.md` sources by case-insensitive substring, optionally within a folder. |
 | `tasks_add` | Add a task to a vault file, creating the file when needed. |
 | `tasks_complete` | Mark a task complete by task ID or exact body. |
 | `tasks_uncomplete` | Reopen a completed task and clear its done date. |
