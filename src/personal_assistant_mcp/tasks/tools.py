@@ -11,6 +11,7 @@ obtain the (possibly lazily-constructed) ``ObsidianVaultClient`` singleton.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -18,9 +19,11 @@ from typing import Any
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 
 from ..tool_errors import surface_tool_errors
-from . import crud, planner
+from . import cache, crud, planner
 from .crud import MoveResult, MutationResult, TaskRef
 from .paths import normalize_vault_path, resolve_move_destination
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_date(value: str | None, field_name: str) -> date | None:
@@ -77,6 +80,41 @@ def _serialize_move(result: MoveResult) -> dict[str, Any]:
     return out
 
 
+async def _freshness(
+    vault: ObsidianVaultClient,
+    meta: dict[str, Any] | None,
+    *,
+    spec_path: str,
+) -> dict[str, Any]:
+    if meta is None:
+        return {"computed_at": None, "spec_hash": None, "source": "live", "stale": None}
+
+    stale: bool | None = None
+    try:
+        spec = await planner.load_planner_spec(vault, spec_path)
+        stale = cache.spec_hash(spec) != meta["spec_hash"]
+    except Exception:
+        stale = None
+
+    return {
+        "computed_at": meta["computed_at"],
+        "spec_hash": meta["spec_hash"],
+        "source": "cache",
+        "stale": stale,
+    }
+
+
+async def _patch_cache_after_mutation(
+    vault: ObsidianVaultClient,
+    *paths: str,
+) -> None:
+    for path in paths:
+        try:
+            await cache.patch_cache_for_path(vault, path)
+        except Exception:
+            logger.warning("Failed to patch task cache for %s", path, exc_info=True)
+
+
 def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     """Attach task CRUD tools to the FastMCP server.
 
@@ -92,7 +130,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         statuses: str = " /",
         due_before: str | None = None,
     ) -> dict[str, Any]:
-        """List open tasks across the vault, with optional filters.
+        """List tasks from TODO.md-selected task sources, with optional filters.
 
         Args:
             folder: vault-relative folder prefix to restrict listing.
@@ -100,25 +138,48 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             statuses: string of status characters to include (default ``" /"``).
             due_before: ISO date; include only tasks due strictly before this date.
         """
-        refs = await crud.list_tasks(
-            get_vault(),
+        vault = get_vault()
+        refs, meta = await cache.cached_refs(vault, spec_path=planner.DEFAULT_SPEC_PATH)
+        filtered = cache.filter_list(
+            refs,
             folder=normalize_vault_path(folder) if folder else None,
             priority_bucket=priority_bucket,
             statuses=tuple(statuses),
             due_before=_parse_date(due_before, "due_before"),
         )
-        return {"tasks": [_serialize_task_ref(r) for r in refs]}
+        return {
+            "tasks": [_serialize_task_ref(r) for r in filtered],
+            **await _freshness(vault, meta, spec_path=planner.DEFAULT_SPEC_PATH),
+        }
 
     @mcp.tool()
     @surface_tool_errors("tasks_search")
     async def tasks_search(query: str, folder: str | None = None) -> dict[str, Any]:
-        """Substring-search open tasks (case-insensitive)."""
-        refs = await crud.search_tasks(
-            get_vault(),
+        """Substring-search TODO.md-selected open tasks (case-insensitive)."""
+        vault = get_vault()
+        refs, meta = await cache.cached_refs(vault, spec_path=planner.DEFAULT_SPEC_PATH)
+        filtered = cache.filter_search(
+            refs,
             query,
             folder=normalize_vault_path(folder) if folder else None,
         )
-        return {"tasks": [_serialize_task_ref(r) for r in refs]}
+        return {
+            "tasks": [_serialize_task_ref(r) for r in filtered],
+            **await _freshness(vault, meta, spec_path=planner.DEFAULT_SPEC_PATH),
+        }
+
+    @mcp.tool()
+    @surface_tool_errors("tasks_compute")
+    async def tasks_compute(spec_path: str = planner.DEFAULT_SPEC_PATH) -> dict[str, Any]:
+        """Recompute the task cache from the TODO planner source-selection spec."""
+        path = normalize_vault_path(spec_path)
+        payload = await cache.compute_cache(get_vault(), spec_path=path)
+        return {
+            "computed_at": payload["computed_at"],
+            "spec_path": payload["spec_path"],
+            "spec_hash": payload["spec_hash"],
+            "task_count": len(payload["tasks"]),
+        }
 
     @mcp.tool()
     @surface_tool_errors("tasks_add")
@@ -142,8 +203,9 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             recurrence: free-form rule text (e.g. ``every Monday``).
         """
         path = normalize_vault_path(file_path)
+        vault = get_vault()
         ref = await crud.add_task(
-            get_vault(),
+            vault,
             path,
             text,
             priority=priority,
@@ -152,6 +214,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             start=_parse_date(start, "start"),
             recurrence=recurrence,
         )
+        await _patch_cache_after_mutation(vault, path)
         return _serialize_task_ref(ref)
 
     @mcp.tool()
@@ -163,7 +226,9 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     ) -> dict[str, Any]:
         """Mark a task done. Identify by ``task_id`` (from tasks_list) or by exact ``body``."""
         path = normalize_vault_path(file_path)
-        result = await crud.complete_task(get_vault(), path, task_id=task_id, body=body)
+        vault = get_vault()
+        result = await crud.complete_task(vault, path, task_id=task_id, body=body)
+        await _patch_cache_after_mutation(vault, path)
         return _serialize_mutation(result)
 
     @mcp.tool()
@@ -175,7 +240,9 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     ) -> dict[str, Any]:
         """Reopen a completed task; clears its done date."""
         path = normalize_vault_path(file_path)
-        result = await crud.uncomplete_task(get_vault(), path, task_id=task_id, body=body)
+        vault = get_vault()
+        result = await crud.uncomplete_task(vault, path, task_id=task_id, body=body)
+        await _patch_cache_after_mutation(vault, path)
         return _serialize_mutation(result)
 
     @mcp.tool()
@@ -193,8 +260,9 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     ) -> dict[str, Any]:
         """Update fields on an existing task. ``None`` means leave unchanged."""
         path = normalize_vault_path(file_path)
+        vault = get_vault()
         result = await crud.update_task(
-            get_vault(),
+            vault,
             path,
             task_id=task_id,
             body=body,
@@ -205,6 +273,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             new_start=_parse_date(new_start, "new_start"),
             new_recurrence=new_recurrence,
         )
+        await _patch_cache_after_mutation(vault, path)
         return _serialize_mutation(result)
 
     @mcp.tool()
@@ -216,7 +285,9 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     ) -> dict[str, Any]:
         """Remove a task line from a file."""
         path = normalize_vault_path(file_path)
-        result = await crud.delete_task(get_vault(), path, task_id=task_id, body=body)
+        vault = get_vault()
+        result = await crud.delete_task(vault, path, task_id=task_id, body=body)
+        await _patch_cache_after_mutation(vault, path)
         return _serialize_mutation(result)
 
     @mcp.tool()
@@ -232,7 +303,23 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         (each section's title + ordered task refs).
         """
         path = normalize_vault_path(spec_path)
-        output = await planner.render_planner(get_vault(), spec_path=path)
+        vault = get_vault()
+        payload = await cache.read_cache(vault)
+        meta: dict[str, Any] | None = None
+        if payload is not None and payload["spec_path"] == path:
+            spec = await planner.load_planner_spec(vault, path)
+            tasks_by_path: dict[str, list] = {}
+            for task_data in payload["tasks"]:
+                ref = cache.dict_to_ref(task_data)
+                tasks_by_path.setdefault(ref.file_path, []).append(ref.task)
+            output = planner.assemble_sections(spec, tasks_by_path)
+            meta = {
+                "computed_at": payload["computed_at"],
+                "spec_path": payload["spec_path"],
+                "spec_hash": payload["spec_hash"],
+            }
+        else:
+            output = await planner.render_planner(vault, spec_path=path)
         return {
             "markdown": output.to_markdown(),
             "sections": [
@@ -242,6 +329,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
                 }
                 for section in output.sections
             ],
+            **await _freshness(vault, meta, spec_path=path),
         }
 
     @mcp.tool()
@@ -267,7 +355,9 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         """
         source = normalize_vault_path(source_path)
         dest = resolve_move_destination(dest_path)
-        result = await crud.move_task(get_vault(), source, dest, task_id=task_id, body=body)
+        vault = get_vault()
+        result = await crud.move_task(vault, source, dest, task_id=task_id, body=body)
+        await _patch_cache_after_mutation(vault, source, dest)
         return _serialize_move(result)
 
 

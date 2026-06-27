@@ -16,10 +16,8 @@ from personal_assistant_mcp.tasks.crud import (
     add_task,
     complete_task,
     delete_task,
-    list_tasks,
     move_task,
     read_tasks,
-    search_tasks,
     uncomplete_task,
     update_task,
 )
@@ -69,112 +67,6 @@ async def test_read_tasks_extracts_tasks_with_line_numbers(
     assert tasks[1].line_number == 3
     assert tasks[2].body == "gamma"
     assert tasks[2].line_number == 6
-
-
-# -----------------------------------------------------------------------------
-# list_tasks
-# -----------------------------------------------------------------------------
-
-
-async def test_list_tasks_returns_open_and_in_progress_by_default(
-    fake_vault: FakeVaultClient,
-) -> None:
-    fake_vault.notes["0 Logs/2026-05-11.md"] = (
-        "- [ ] open\n- [/] in_progress\n- [x] done\n- [-] cancelled\n"
-    )
-    refs = await list_tasks(fake_vault)
-    bodies = sorted(r.task.body for r in refs)
-    assert bodies == ["in_progress", "open"]
-
-
-async def test_list_tasks_filters_by_folder(fake_vault: FakeVaultClient) -> None:
-    fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] daily-task\n"
-    fake_vault.notes["1 Projects/x/todo.md"] = "- [ ] project-task\n"
-    refs = await list_tasks(fake_vault, folder="0 Logs")
-    assert [r.task.body for r in refs] == ["daily-task"]
-
-
-async def test_list_tasks_filters_by_priority_bucket(
-    fake_vault: FakeVaultClient,
-) -> None:
-    fake_vault.notes["a.md"] = "- [ ] no-priority\n- [ ] high \U0001f53a\n- [ ] low \U0001f53d\n"
-    high = await list_tasks(fake_vault, priority_bucket="high")
-    low = await list_tasks(fake_vault, priority_bucket="low")
-    assert [r.task.body for r in high] == ["high"]
-    assert [r.task.body for r in low] == ["low"]
-
-
-async def test_list_tasks_filters_by_due_before(fake_vault: FakeVaultClient) -> None:
-    fake_vault.notes["a.md"] = (
-        "- [ ] tomorrow \U0001f4c5 2026-05-12\n"
-        "- [ ] today \U0001f4c5 2026-05-11\n"
-        "- [ ] next-week \U0001f4c5 2026-05-18\n"
-        "- [ ] undated\n"
-    )
-    refs = await list_tasks(fake_vault, due_before=date(2026, 5, 12))
-    assert sorted(r.task.body for r in refs) == ["today"]
-
-
-async def test_list_tasks_skips_archives_and_attachments(
-    fake_vault: FakeVaultClient,
-) -> None:
-    fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] live\n"
-    fake_vault.notes["4 Archives/2026/note.md"] = "- [ ] archived\n"
-    fake_vault.notes["0 Logs/attachments/note.md"] = "- [ ] attachment\n"
-    refs = await list_tasks(fake_vault)
-    assert [r.task.body for r in refs] == ["live"]
-
-
-async def test_list_tasks_paginates_through_large_vault(
-    fake_vault: FakeVaultClient,
-) -> None:
-    # Force pagination — _enumerate_notes uses page size 100
-    for i in range(250):
-        fake_vault.notes[f"1 Projects/p{i:03d}/todo.md"] = f"- [ ] task-{i}\n"
-    refs = await list_tasks(fake_vault, folder="1 Projects")
-    assert len(refs) == 250
-
-
-async def test_list_tasks_skips_unreadable_note(
-    fake_vault: FakeVaultClient,
-) -> None:
-    fake_vault.notes["0 Logs/2026-06-03.md"] = "- [ ] visible task\n"
-    fake_vault.notes["0 Logs/2026-06-04.md"] = "- [ ] hidden task\n"
-    fake_vault.read_errors["0 Logs/2026-06-04.md"] = ValueError(
-        "Missing 1 chunk(s) for 0 Logs/2026-06-04.md after 4 attempt(s): ['h:bad']"
-    )
-
-    refs = await list_tasks(fake_vault)
-
-    assert [r.task.body for r in refs] == ["visible task"]
-
-
-# -----------------------------------------------------------------------------
-# search_tasks
-# -----------------------------------------------------------------------------
-
-
-async def test_search_finds_substring_case_insensitive(
-    fake_vault: FakeVaultClient,
-) -> None:
-    fake_vault.notes["a.md"] = "- [ ] Buy MILK at store\n- [ ] eggs\n- [ ] write code\n"
-    refs = await search_tasks(fake_vault, "milk")
-    assert [r.task.body for r in refs] == ["Buy MILK at store"]
-
-
-async def test_search_empty_query_returns_nothing(
-    fake_vault: FakeVaultClient,
-) -> None:
-    fake_vault.notes["a.md"] = "- [ ] anything\n"
-    assert await search_tasks(fake_vault, "") == []
-    assert await search_tasks(fake_vault, "   ") == []
-
-
-async def test_search_respects_folder_filter(fake_vault: FakeVaultClient) -> None:
-    fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] read book\n"
-    fake_vault.notes["1 Projects/a/todo.md"] = "- [ ] read paper\n"
-    refs = await search_tasks(fake_vault, "read", folder="0 Logs")
-    assert [r.task.body for r in refs] == ["read book"]
 
 
 # -----------------------------------------------------------------------------
@@ -277,7 +169,8 @@ async def test_complete_task_by_body(fake_vault: FakeVaultClient) -> None:
 
 async def test_complete_task_by_id(fake_vault: FakeVaultClient) -> None:
     fake_vault.notes["x.md"] = "- [ ] alpha\n"
-    [ref] = await list_tasks(fake_vault)
+    [task] = await read_tasks(fake_vault, "x.md")
+    ref = TaskRef("x.md", task)
     result = await complete_task(fake_vault, "x.md", task_id=ref.id, today=_TODAY)
     assert result.ref.task.is_complete
 
@@ -422,15 +315,19 @@ async def test_update_task_rejects_newlines_in_new_body(
 
 
 # -----------------------------------------------------------------------------
-# Identity round-trip: list -> id -> mutate by id -> verify
+# Identity round-trip: TaskRef id -> mutate by id -> verify
 # -----------------------------------------------------------------------------
 
 
-async def test_id_roundtrip_through_list_and_complete(
+async def test_id_roundtrip_through_taskref_and_complete(
     fake_vault: FakeVaultClient,
 ) -> None:
     fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] alpha\n- [ ] beta \U0001f53c\n- [ ] gamma\n"
-    refs = sorted(await list_tasks(fake_vault), key=lambda r: r.task.body)
+    refs = [
+        TaskRef("0 Logs/2026-05-11.md", task)
+        for task in await read_tasks(fake_vault, "0 Logs/2026-05-11.md")
+    ]
+    refs = sorted(refs, key=lambda r: r.task.body)
     beta = next(r for r in refs if r.task.body == "beta")
     result = await complete_task(fake_vault, beta.file_path, task_id=beta.id, today=_TODAY)
     assert result.ref.task.body == "beta"
@@ -559,7 +456,10 @@ async def test_move_task_raises_when_task_not_in_source(
 async def test_move_task_by_task_id(fake_vault: FakeVaultClient) -> None:
     fake_vault.notes["0 Logs/2026-05-11.md"] = "- [ ] alpha\n- [ ] beta \U0001f53c\n"
     fake_vault.notes["1 Projects/x/todo.md"] = ""
-    refs = await list_tasks(fake_vault)
+    refs = [
+        TaskRef("0 Logs/2026-05-11.md", task)
+        for task in await read_tasks(fake_vault, "0 Logs/2026-05-11.md")
+    ]
     beta = next(r for r in refs if r.task.body == "beta")
     result = await move_task(
         fake_vault,
