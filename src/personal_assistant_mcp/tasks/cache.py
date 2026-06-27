@@ -81,14 +81,13 @@ async def write_cache(vault: ObsidianVaultClient, payload: dict[str, Any]) -> No
 async def patch_cache_for_path(
     vault: ObsidianVaultClient,
     file_path: str,
-    *,
-    spec_path: str,
 ) -> None:
     """Patch one file's task entries inside an existing cache payload."""
     payload = await read_cache(vault)
     if payload is None:
         return
 
+    spec_path = str(payload["spec_path"])
     old_tasks = payload["tasks"]
     payload["tasks"] = [task for task in old_tasks if task["source_path"] != file_path]
 

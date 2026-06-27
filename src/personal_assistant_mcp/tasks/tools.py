@@ -107,11 +107,10 @@ async def _freshness(
 async def _patch_cache_after_mutation(
     vault: ObsidianVaultClient,
     *paths: str,
-    spec_path: str = planner.DEFAULT_SPEC_PATH,
 ) -> None:
     for path in paths:
         try:
-            await cache.patch_cache_for_path(vault, path, spec_path=spec_path)
+            await cache.patch_cache_for_path(vault, path)
         except Exception:
             logger.warning("Failed to patch task cache for %s", path, exc_info=True)
 

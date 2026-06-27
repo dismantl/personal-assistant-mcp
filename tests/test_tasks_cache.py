@@ -112,6 +112,22 @@ def _root_only_spec_fm() -> dict[str, Any]:
     return spec
 
 
+def _all_tasks_spec_fm(root: str) -> dict[str, Any]:
+    spec = _planner_spec_fm()
+    spec["sourceSelection"]["include"] = {
+        "roots": [root],
+        "basenamesCaseInsensitive": [],
+    }
+    spec["sections"] = [
+        {
+            "kind": "static",
+            "id": "all",
+            "title": "All",
+        }
+    ]
+    return spec
+
+
 def _seed_default_spec(fake_vault: FakeVaultClient) -> None:
     fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
 
@@ -387,6 +403,33 @@ async def test_task_mutations_patch_existing_cache(fake_vault: FakeVaultClient) 
     await task_tools["tasks_delete"]("1 Projects/a/todo.md", body="original")
     listed = await task_tools["tasks_list"](statuses=" /x")
     assert [task["body"] for task in listed["tasks"]] == ["updated cached task"]
+
+
+async def test_mutations_patch_cache_using_cached_spec_path(
+    fake_vault: FakeVaultClient,
+) -> None:
+    task_tools = _register_task_tools(fake_vault)
+    fake_vault.frontmatters["TODO.md"] = _all_tasks_spec_fm("0 Logs")
+    fake_vault.frontmatters["ALT.md"] = _all_tasks_spec_fm("1 Projects")
+    fake_vault.notes["1 Projects/a/todo.md"] = "- [ ] alt original\n"
+    await task_tools["tasks_compute"](spec_path="ALT.md")
+
+    await task_tools["tasks_add"]("default-only task", "0 Logs/default.md")
+    cached_payload = json.loads(fake_vault.notes[CACHE_PATH])
+    assert cached_payload["spec_path"] == "ALT.md"
+    assert [(task["source_path"], task["body"]) for task in cached_payload["tasks"]] == [
+        ("1 Projects/a/todo.md", "alt original")
+    ]
+
+    await task_tools["tasks_add"]("alt new task", "1 Projects/a/todo.md")
+    rendered = await task_tools["tasks_render_planner"](spec_path="ALT.md")
+
+    assert rendered["source"] == "cache"
+    assert rendered["stale"] is False
+    assert [task["body"] for section in rendered["sections"] for task in section["tasks"]] == [
+        "alt original",
+        "alt new task",
+    ]
 
 
 async def test_out_of_scope_mutation_removes_stale_cache_entries(
