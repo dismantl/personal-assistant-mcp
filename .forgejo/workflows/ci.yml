@@ -37,3 +37,6 @@ jobs:
 
       - name: Check formatting
         run: uv run --locked ruff format --check src/ tests/
+
+      - name: Run type checks
+        run: uv run --locked mypy

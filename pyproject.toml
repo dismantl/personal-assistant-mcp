@@ -39,6 +39,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "respx>=0.22.0",
     "mypy>=1.10",
+    "types-defusedxml>=0.7.0.20260504",
 ]
 
 [tool.ruff]
@@ -50,6 +51,18 @@ select = ["E", "F", "W", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+
+[tool.mypy]
+files = ["src", "tests"]
+python_version = "3.12"
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "obsidian_livesync_mcp.*",
+    "recurring_ical_events",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
