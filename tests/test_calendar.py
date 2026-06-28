@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timezone
+from typing import cast
 
 import httpx
 import icalendar
@@ -325,7 +326,7 @@ END:VCALENDAR
 
 def _vevents_from_body(body: str) -> list[icalendar.Event]:
     calendar = icalendar.Calendar.from_ical(body)
-    return [component for component in calendar.walk("VEVENT")]
+    return [cast(icalendar.Event, component) for component in calendar.walk("VEVENT")]
 
 
 # -----------------------------------------------------------------------------

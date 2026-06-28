@@ -21,7 +21,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, TypeGuard, cast
 from urllib.parse import urljoin
 from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -198,10 +198,22 @@ def _event_uid_report_body(uid: str) -> str:
 
 def _calendar_data_has_uid(calendar_data: str, uid: str) -> bool:
     try:
-        calendar = icalendar.Calendar.from_ical(calendar_data)
+        calendar = _parse_calendar(calendar_data)
     except ValueError:
         return False
-    return any(str(component.get("UID", "")) == uid for component in calendar.walk("VEVENT"))
+    return any(str(component.get("UID", "")) == uid for component in _event_components(calendar))
+
+
+def _parse_calendar(calendar_data: str | bytes) -> icalendar.Calendar:
+    return cast(icalendar.Calendar, icalendar.Calendar.from_ical(calendar_data))
+
+
+def _event_components(calendar: icalendar.Calendar) -> list[icalendar.Event]:
+    return [cast(icalendar.Event, component) for component in calendar.walk("VEVENT")]
+
+
+def _is_event_component(component: Any) -> TypeGuard[icalendar.Event]:
+    return getattr(component, "name", "") == "VEVENT"
 
 
 async def _find_event_resource_by_uid(
@@ -283,7 +295,9 @@ def _select_rsvp_event(
     recurrence_id: date | datetime | None,
 ) -> icalendar.Event | None:
     matches = [
-        component for component in calendar.walk("VEVENT") if str(component.get("UID", "")) == uid
+        component
+        for component in _event_components(calendar)
+        if str(component.get("UID", "")) == uid
     ]
     if recurrence_id is not None:
         return next(
@@ -332,7 +346,7 @@ def _update_attendee_partstat(
     attendee: str | None,
     recurrence_id: date | datetime | None,
 ) -> tuple[bytes | None, dict[str, Any] | None]:
-    calendar = icalendar.Calendar.from_ical(calendar_data)
+    calendar = _parse_calendar(calendar_data)
     component = _select_rsvp_event(calendar, uid=uid, recurrence_id=recurrence_id)
     if component is None and recurrence_id is not None:
         master = _find_master_event(calendar, uid)
@@ -454,7 +468,7 @@ def _recurrence_id_matches(component: icalendar.Event, recurrence_id: date | dat
 
 
 def _find_master_event(calendar: icalendar.Calendar, uid: str) -> icalendar.Event | None:
-    for component in calendar.walk("VEVENT"):
+    for component in _event_components(calendar):
         if str(component.get("UID", "")) == uid and component.get("RECURRENCE-ID") is None:
             return component
     return None
@@ -467,7 +481,7 @@ def _remove_recurrence_override(
         component
         for component in calendar.subcomponents
         if not (
-            getattr(component, "name", "") == "VEVENT"
+            _is_event_component(component)
             and str(component.get("UID", "")) == uid
             and _recurrence_id_matches(component, recurrence_id)
         )
@@ -485,7 +499,7 @@ def _build_recurring_instance_update_ical(
     description: str | None = None,
     location: str | None = None,
 ) -> bytes | None:
-    calendar = icalendar.Calendar.from_ical(calendar_data)
+    calendar = _parse_calendar(calendar_data)
     if _find_master_event(calendar, uid) is None:
         return None
 
@@ -507,7 +521,7 @@ def _build_recurring_instance_update_ical(
 def _build_recurring_instance_delete_ical(
     calendar_data: str, *, uid: str, recurrence_id: date | datetime
 ) -> bytes | None:
-    calendar = icalendar.Calendar.from_ical(calendar_data)
+    calendar = _parse_calendar(calendar_data)
     master = _find_master_event(calendar, uid)
     if master is None:
         return None
@@ -594,7 +608,7 @@ async def fetch_events(
             except httpx.HTTPStatusError:
                 continue
 
-            ical_cal = icalendar.Calendar.from_ical(response.text)
+            ical_cal = _parse_calendar(response.text)
             expanded = recurring_ical_events.of(ical_cal).between(start, end)
             for event in expanded:
                 row: dict[str, Any] = {
@@ -637,7 +651,7 @@ async def create_event(
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
     has_supplied_uid = uid is not None
-    event_uid = _validate_uid_text(uid, "uid") if has_supplied_uid else uuid.uuid4().hex
+    event_uid = _validate_uid_text(uid, "uid") if uid is not None else uuid.uuid4().hex
     resource_id = _resource_id_for_uid(event_uid)
     body = _build_event_ical(
         uid=event_uid,
@@ -710,6 +724,7 @@ async def update_event(
         if resource is None:
             return {"error": f"Event not found: {event_uid}", "uid": event_uid}
 
+        body: bytes | None
         if parsed_recurrence_id is None:
             body = _build_event_ical(
                 uid=event_uid,

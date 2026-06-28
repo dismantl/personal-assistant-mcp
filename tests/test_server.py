@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from typing import Any, cast
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -72,6 +73,12 @@ def _inbox_client(monkeypatch: pytest.MonkeyPatch, fake_vault: FakeVaultClient) 
     monkeypatch.setattr(server_module, "_vault", fake_vault)
     monkeypatch.setattr(daily_note, "today_in_vault_tz", lambda: daily_note.date(2026, 5, 11))
     return TestClient(server_module.mcp.streamable_http_app())
+
+
+async def _call_tool_payload(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    _, payload = await mcp.call_tool(name, args)
+    assert isinstance(payload, dict)
+    return cast(dict[str, Any], payload)
 
 
 def test_mcp_server_name() -> None:
@@ -173,8 +180,8 @@ async def test_task_cache_smoke_via_mcp_call_tool(monkeypatch: pytest.MonkeyPatc
     fake_vault.notes["0 Logs/cache-smoke.md"] = "- [ ] via mcp\n"
     monkeypatch.setattr(server_module, "_vault", fake_vault)
 
-    _, computed = await mcp.call_tool("tasks_compute", {})
-    _, listed = await mcp.call_tool("tasks_list", {})
+    computed = await _call_tool_payload("tasks_compute", {})
+    listed = await _call_tool_payload("tasks_list", {})
 
     assert computed["task_count"] == 1
     assert listed["source"] == "cache"
@@ -182,11 +189,11 @@ async def test_task_cache_smoke_via_mcp_call_tool(monkeypatch: pytest.MonkeyPatc
     assert [task["body"] for task in listed["tasks"]] == ["via mcp"]
 
     await mcp.call_tool("tasks_add", {"text": "patched", "file_path": "0 Logs/cache-smoke.md"})
-    _, after_add = await mcp.call_tool("tasks_list", {})
+    after_add = await _call_tool_payload("tasks_list", {})
     assert [task["body"] for task in after_add["tasks"]] == ["via mcp", "patched"]
 
     fake_vault.notes[CACHE_PATH] = "{corrupt"
-    _, fallback = await mcp.call_tool("tasks_list", {})
+    fallback = await _call_tool_payload("tasks_list", {})
     assert fallback["source"] == "live"
     assert [task["body"] for task in fallback["tasks"]] == ["via mcp", "patched"]
 
