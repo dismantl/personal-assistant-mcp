@@ -6,7 +6,7 @@ JSON-friendly dicts for the MCP wire format.
 
 The module-level ``register(mcp, get_vault)`` function attaches the tools to
 the given FastMCP server, with ``get_vault`` called on each invocation to
-obtain the (possibly lazily-constructed) ``ObsidianVaultClient`` singleton.
+obtain the active, possibly lazily-constructed ``ObsidianVaultClient``.
 """
 
 from __future__ import annotations
@@ -24,6 +24,8 @@ from .crud import MoveResult, MutationResult, TaskRef
 from .paths import normalize_vault_path, resolve_move_destination
 
 logger = logging.getLogger(__name__)
+
+OPEN_TASK_STATUSES = (" ", "/")
 
 
 def _parse_date(value: str | None, field_name: str) -> date | None:
@@ -104,6 +106,14 @@ async def _freshness(
     }
 
 
+def _status_filter(statuses: str | None, *, include_closed: bool) -> tuple[str, ...] | None:
+    if statuses is not None:
+        return tuple(statuses)
+    if include_closed:
+        return None
+    return OPEN_TASK_STATUSES
+
+
 async def _patch_cache_after_mutation(
     vault: ObsidianVaultClient,
     *paths: str,
@@ -127,16 +137,20 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
     async def tasks_list(
         folder: str | None = None,
         priority_bucket: str | None = None,
-        statuses: str = " /",
+        statuses: str | None = None,
         due_before: str | None = None,
+        include_closed: bool = False,
     ) -> dict[str, Any]:
         """List tasks from TODO.md-selected task sources, with optional filters.
 
         Args:
             folder: vault-relative folder prefix to restrict listing.
             priority_bucket: ``high``, ``medium``, or ``low``.
-            statuses: string of status characters to include (default ``" /"``).
+            statuses: explicit status characters to include. Overrides
+                ``include_closed`` when provided.
             due_before: ISO date; include only tasks due strictly before this date.
+            include_closed: include all cached/scanned statuses when no explicit
+                ``statuses`` filter is provided.
         """
         vault = get_vault()
         refs, meta = await cache.cached_refs(vault, spec_path=planner.DEFAULT_SPEC_PATH)
@@ -144,7 +158,7 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             refs,
             folder=normalize_vault_path(folder) if folder else None,
             priority_bucket=priority_bucket,
-            statuses=tuple(statuses),
+            statuses=_status_filter(statuses, include_closed=include_closed),
             due_before=_parse_date(due_before, "due_before"),
         )
         return {
@@ -154,14 +168,20 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
 
     @mcp.tool()
     @surface_tool_errors("tasks_search")
-    async def tasks_search(query: str, folder: str | None = None) -> dict[str, Any]:
-        """Substring-search TODO.md-selected open tasks (case-insensitive)."""
+    async def tasks_search(
+        query: str,
+        folder: str | None = None,
+        statuses: str | None = None,
+        include_closed: bool = False,
+    ) -> dict[str, Any]:
+        """Substring-search TODO.md-selected tasks, open-only by default."""
         vault = get_vault()
         refs, meta = await cache.cached_refs(vault, spec_path=planner.DEFAULT_SPEC_PATH)
         filtered = cache.filter_search(
             refs,
             query,
             folder=normalize_vault_path(folder) if folder else None,
+            statuses=_status_filter(statuses, include_closed=include_closed),
         )
         return {
             "tasks": [_serialize_task_ref(r) for r in filtered],

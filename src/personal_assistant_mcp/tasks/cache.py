@@ -128,7 +128,7 @@ def filter_list(
     *,
     folder: str | None = None,
     priority_bucket: str | None = None,
-    statuses: tuple[str, ...] = (" ", "/"),
+    statuses: tuple[str, ...] | None = (" ", "/"),
     due_before: date | None = None,
 ) -> list[TaskRef]:
     """Filter task refs for ``tasks_list`` without touching the vault."""
@@ -136,7 +136,7 @@ def filter_list(
     for ref in refs:
         if folder is not None and not _path_in_folder(ref.file_path, folder):
             continue
-        if ref.task.status not in statuses:
+        if statuses is not None and ref.task.status not in statuses:
             continue
         if priority_bucket is not None and ref.task.priority_bucket != priority_bucket:
             continue
@@ -151,7 +151,7 @@ def filter_search(
     query: str,
     *,
     folder: str | None = None,
-    statuses: tuple[str, ...] = (" ", "/"),
+    statuses: tuple[str, ...] | None = (" ", "/"),
 ) -> list[TaskRef]:
     """Filter task refs for ``tasks_search`` without touching the vault."""
     q = query.strip().lower()
@@ -162,7 +162,7 @@ def filter_search(
     for ref in refs:
         if folder is not None and not _path_in_folder(ref.file_path, folder):
             continue
-        if ref.task.status not in statuses:
+        if statuses is not None and ref.task.status not in statuses:
             continue
         if q in ref.task.body.lower():
             out.append(ref)

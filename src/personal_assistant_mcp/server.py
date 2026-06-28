@@ -5,8 +5,9 @@ In HTTP mode ``MCP_API_KEY`` is **required**; the server refuses to start an
 unauthenticated HTTP listener because exposed tools can have side effects on
 the configured vault, RSS reader, or calendar.
 
-The vault client is constructed lazily on the first tool that needs it and
-closed cleanly on server shutdown via the FastMCP lifespan hook.
+MCP tool calls use a lifespan-scoped vault client so stateless HTTP requests
+cannot close a client that another concurrent request is still using. Routes
+outside the MCP request lifespan use a lazy process fallback client.
 
 Email operations should be handled by a dedicated email MCP server when needed.
 """
@@ -17,6 +18,8 @@ import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -91,11 +94,23 @@ if _transport == "streamable-http":
     )
 
 
+@dataclass
+class _VaultScope:
+    client: ObsidianVaultClient | None = None
+
+
+_vault_scope: ContextVar[_VaultScope | None] = ContextVar("vault_scope", default=None)
 _vault: ObsidianVaultClient | None = None
 
 
 def _get_vault() -> ObsidianVaultClient:
-    """Return the shared vault client, constructing it on first call."""
+    """Return the active vault client, constructing it on first use."""
+    scope = _vault_scope.get()
+    if scope is not None:
+        if scope.client is None:
+            scope.client = build_vault_client(Settings.from_env())
+        return scope.client
+
     global _vault
     if _vault is None:
         _vault = build_vault_client(Settings.from_env())
@@ -104,17 +119,20 @@ def _get_vault() -> ObsidianVaultClient:
 
 @asynccontextmanager
 async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
-    """Close the vault client on shutdown if it was constructed."""
-    global _vault
+    """Scope MCP tool vault clients to the current server/request lifespan."""
+    scope = _VaultScope()
+    token = _vault_scope.set(scope)
     try:
         yield
     finally:
-        if _vault is not None:
-            try:
-                await _vault.close()
-            except Exception:
-                logger.exception("Error closing vault client")
-            _vault = None
+        try:
+            if scope.client is not None:
+                try:
+                    await scope.client.close()
+                except Exception:
+                    logger.exception("Error closing vault client")
+        finally:
+            _vault_scope.reset(token)
 
 
 _server_kwargs["lifespan"] = _lifespan
