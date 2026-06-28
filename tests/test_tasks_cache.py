@@ -305,6 +305,52 @@ async def test_tasks_list_and_search_serve_cache_with_freshness(
     assert [task["body"] for task in searched["tasks"]] == ["open from cache source"]
 
 
+async def test_tasks_list_and_search_default_open_tasks_and_can_include_all(
+    fake_vault: FakeVaultClient,
+) -> None:
+    task_tools = _register_task_tools(fake_vault)
+    spec = _all_tasks_spec_fm("0 Logs")
+    spec["tasks"]["includeStatuses"] = [" ", "/", "x", "-"]
+    fake_vault.frontmatters["TODO.md"] = spec
+    fake_vault.notes["0 Logs/today.md"] = (
+        "- [ ] follow up open\n"
+        "- [/] follow up active\n"
+        "- [x] follow up done ✅ 2026-06-28\n"
+        "- [-] follow up cancelled ❌ 2026-06-28\n"
+    )
+    await task_tools["tasks_compute"]()
+
+    listed = await task_tools["tasks_list"]()
+    searched = await task_tools["tasks_search"]("follow up")
+
+    assert [task["body"] for task in listed["tasks"]] == [
+        "follow up open",
+        "follow up active",
+    ]
+    assert [task["body"] for task in searched["tasks"]] == [
+        "follow up open",
+        "follow up active",
+    ]
+
+    all_listed = await task_tools["tasks_list"](include_closed=True)
+    all_searched = await task_tools["tasks_search"]("follow up", include_closed=True)
+    assert [task["body"] for task in all_listed["tasks"]] == [
+        "follow up open",
+        "follow up active",
+        "follow up done",
+        "follow up cancelled",
+    ]
+    assert [task["body"] for task in all_searched["tasks"]] == [
+        "follow up open",
+        "follow up active",
+        "follow up done",
+        "follow up cancelled",
+    ]
+
+    closed_search = await task_tools["tasks_search"]("done", statuses="x")
+    assert [task["body"] for task in closed_search["tasks"]] == ["follow up done"]
+
+
 async def test_tasks_list_uses_scoped_live_fallback_when_cache_is_corrupt(
     fake_vault: FakeVaultClient,
 ) -> None:

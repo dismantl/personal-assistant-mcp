@@ -58,6 +58,15 @@ class BlankWriteFailureVault(FakeVaultClient):
         raise RuntimeError()
 
 
+class ClosingVault(FakeVaultClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def _inbox_client(monkeypatch: pytest.MonkeyPatch, fake_vault: FakeVaultClient) -> TestClient:
     monkeypatch.setattr(server_module, "_api_key", "test-key", raising=False)
     monkeypatch.setattr(server_module, "_vault", fake_vault)
@@ -76,6 +85,38 @@ async def test_health_returns_ok() -> None:
     assert result["service"] == "personal-assistant-mcp"
     assert "transport" in result
     assert "legacy_email_tools_enabled" not in result
+
+
+@pytest.mark.asyncio
+async def test_lifespan_uses_isolated_vault_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[ClosingVault] = []
+
+    def build_client(_settings: object) -> ClosingVault:
+        client = ClosingVault()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(server_module, "build_vault_client", build_client)
+    monkeypatch.setattr(server_module.Settings, "from_env", lambda: object())
+    monkeypatch.setattr(server_module, "_vault", None, raising=False)
+
+    async with server_module._lifespan(server_module.mcp):
+        outer = server_module._get_vault()
+
+        async with server_module._lifespan(server_module.mcp):
+            inner = server_module._get_vault()
+
+            assert inner is not outer
+            assert not outer.closed
+
+        assert inner.closed
+        assert not outer.closed
+        assert server_module._get_vault() is outer
+
+    assert outer.closed
+    assert clients == [outer, inner]
 
 
 @pytest.mark.asyncio
