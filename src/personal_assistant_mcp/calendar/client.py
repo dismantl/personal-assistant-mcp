@@ -590,6 +590,33 @@ async def fetch_events(
         raise ValueError(f"Unknown kind {kind!r}: expected 'today' or 'week'")
 
     start, end = _window(config, kind, now=now)
+    return await _fetch_events_between(config, start, end, http_client=http_client)
+
+
+async def fetch_events_range(
+    config: CalDAVConfig,
+    *,
+    start: str,
+    end: str,
+    http_client: httpx.AsyncClient | None = None,
+) -> list[dict[str, Any]]:
+    """Return events between two ISO datetimes (max 366 days), sorted by start."""
+    start_dt = _parse_iso_datetime(start, "start")
+    end_dt = _parse_iso_datetime(end, "end")
+    if end_dt <= start_dt:
+        raise ValueError("end must be after start")
+    if end_dt - start_dt > timedelta(days=366):
+        raise ValueError("start to end must span 366 days or less")
+    return await _fetch_events_between(config, start_dt, end_dt, http_client=http_client)
+
+
+async def _fetch_events_between(
+    config: CalDAVConfig,
+    start: datetime,
+    end: datetime,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> list[dict[str, Any]]:
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
     try:
@@ -691,6 +718,58 @@ async def create_event(
             await client.aclose()
 
     return {"uid": event_uid, "href": href, "created": True}
+
+
+async def import_ics(
+    config: CalDAVConfig,
+    *,
+    calendar_slug: str,
+    ics_text: str,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Store a raw iCalendar object (e.g. an emailed invite) as-is, upserting by UID.
+
+    Unlike ``create_event`` this preserves scheduling properties
+    (ORGANIZER/ATTENDEE/VTIMEZONE), which the server needs to notify the
+    organizer when the attendee's participation status later changes.
+    """
+    calendar = _parse_calendar(ics_text)
+    if getattr(calendar, "name", "") != "VCALENDAR":
+        raise ValueError("ics_text must contain a VCALENDAR")
+    events = _event_components(calendar)
+    if not events:
+        raise ValueError("ics_text must contain at least one VEVENT")
+    uids = [str(event.get("UID", "")).strip() for event in events]
+    if any(not uid for uid in uids) or len(set(uids)) != 1:
+        raise ValueError("ics_text must contain exactly one event UID")
+    event_uid = _validate_uid_text(uids[0], "ics_text UID")
+    # CalDAV object resources must not carry an iTIP METHOD property
+    # (RFC 4791 §4.1); emailed invites arrive with METHOD:REQUEST.
+    if calendar.get("METHOD") is not None:
+        del calendar["METHOD"]
+    body = calendar.to_ical()
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    try:
+        existing_href = await _find_event_href_by_uid(
+            config, calendar_slug, event_uid, client=client
+        )
+        created = existing_href is None
+        href = existing_href or _event_href(config, calendar_slug, _resource_id_for_uid(event_uid))
+        headers = {
+            "Authorization": _auth_header(config),
+            "Content-Type": "text/calendar; charset=utf-8",
+        }
+        if created:
+            headers["If-None-Match"] = "*"
+        response = await client.put(href, content=body, headers=headers)
+        response.raise_for_status()
+    finally:
+        if own_client:
+            await client.aclose()
+
+    return {"uid": event_uid, "href": href, "created": created, "updated": not created}
 
 
 async def update_event(
@@ -930,6 +1009,8 @@ __all__ = [
     "create_event",
     "delete_event",
     "fetch_events",
+    "fetch_events_range",
+    "import_ics",
     "list_calendars",
     "rsvp_event",
     "update_event",

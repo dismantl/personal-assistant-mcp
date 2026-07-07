@@ -33,6 +33,25 @@ def register(mcp: Any) -> None:
         return {"events": events}
 
     @mcp.tool()
+    @surface_tool_errors("calendar_events_range")
+    async def calendar_events_range(start: str, end: str) -> dict[str, Any]:
+        """Fetch events between two ISO datetimes (max 366 days) across all calendars."""
+        events = await caldav.fetch_events_range(
+            caldav.CalDAVConfig.from_env(), start=start, end=end
+        )
+        return {"events": events, "start": start, "end": end}
+
+    @mcp.tool()
+    @surface_tool_errors("calendar_import_ics")
+    async def calendar_import_ics(calendar_slug: str, ics_text: str) -> dict[str, Any]:
+        """Import a raw iCalendar invite as-is (preserves organizer/attendees; upserts by UID)."""
+        return await caldav.import_ics(
+            caldav.CalDAVConfig.from_env(),
+            calendar_slug=calendar_slug,
+            ics_text=ics_text,
+        )
+
+    @mcp.tool()
     @surface_tool_errors("calendar_create_event")
     async def calendar_create_event(
         calendar_slug: str,
