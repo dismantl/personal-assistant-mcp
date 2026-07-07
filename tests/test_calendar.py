@@ -1364,3 +1364,12 @@ async def test_import_ics_rejects_invalid_payloads() -> None:
     )
     with pytest.raises(ValueError, match="exactly one event UID"):
         await import_ics(_CONFIG, calendar_slug="personal", ics_text=missing_uid)
+    bare_event = """BEGIN:VEVENT
+UID:invite-1@external.example
+SUMMARY:Bare event
+DTSTART:20260716T100000Z
+DTEND:20260716T110000Z
+END:VEVENT
+"""
+    with pytest.raises(ValueError, match="VCALENDAR"):
+        await import_ics(_CONFIG, calendar_slug="personal", ics_text=bare_event)

@@ -734,6 +734,8 @@ async def import_ics(
     organizer when the attendee's participation status later changes.
     """
     calendar = _parse_calendar(ics_text)
+    if getattr(calendar, "name", "") != "VCALENDAR":
+        raise ValueError("ics_text must contain a VCALENDAR")
     events = _event_components(calendar)
     if not events:
         raise ValueError("ics_text must contain at least one VEVENT")
