@@ -16,6 +16,8 @@ from personal_assistant_mcp.calendar.client import (
     create_event,
     delete_event,
     fetch_events,
+    fetch_events_range,
+    import_ics,
     list_calendars,
     rsvp_event,
     update_event,
@@ -1194,3 +1196,154 @@ async def test_delete_event_rejects_control_chars_in_uid() -> None:
 async def test_delete_event_rejects_dotdot_calendar_slug() -> None:
     with pytest.raises(ValueError, match="calendar_slug"):
         await delete_event(_CONFIG, calendar_slug="..", uid="event-123")
+
+
+_ICAL_INVITE = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//External//
+METHOD:REQUEST
+BEGIN:VTIMEZONE
+TZID:America/New_York
+BEGIN:STANDARD
+DTSTART:20251102T020000
+TZOFFSETFROM:-0400
+TZOFFSETTO:-0500
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:invite-1@external.example
+SUMMARY:Coffee chat
+DTSTART;TZID=America/New_York:20260715T100000
+DTEND;TZID=America/New_York:20260715T110000
+ORGANIZER;CN=Alice:mailto:alice@external.example
+ATTENDEE;CN=Dan;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:dan@example.com
+END:VEVENT
+END:VCALENDAR
+"""
+
+_REPORT_INVITE_FOUND_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/existing-invite.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:invite-1@external.example
+SUMMARY:Coffee chat
+DTSTART:20260715T140000Z
+DTEND:20260715T150000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
+
+@respx.mock
+async def test_fetch_events_range_returns_events_between() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_PERSONAL)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_HOLIDAYS)
+    )
+
+    events = await fetch_events_range(
+        _CONFIG,
+        start="2026-05-25T00:00:00+00:00",
+        end="2026-06-05T00:00:00+00:00",
+    )
+
+    assert [event["uid"] for event in events] == ["event2@test"]
+
+
+@respx.mock
+async def test_fetch_events_range_rejects_invalid_ranges() -> None:
+    with pytest.raises(ValueError, match="end must be after start"):
+        await fetch_events_range(
+            _CONFIG,
+            start="2026-05-25T00:00:00+00:00",
+            end="2026-05-25T00:00:00+00:00",
+        )
+    with pytest.raises(ValueError, match="366 days or less"):
+        await fetch_events_range(
+            _CONFIG,
+            start="2026-01-01T00:00:00+00:00",
+            end="2027-06-01T00:00:00+00:00",
+        )
+    with pytest.raises(ValueError, match="timezone offset"):
+        await fetch_events_range(
+            _CONFIG,
+            start="2026-05-25T00:00:00",
+            end="2026-06-05T00:00:00+00:00",
+        )
+
+
+@respx.mock
+async def test_import_ics_creates_event_preserving_scheduling_properties() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/invite-1@external.example.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    result = await import_ics(_CONFIG, calendar_slug="personal", ics_text=_ICAL_INVITE)
+
+    assert result == {
+        "uid": "invite-1@external.example",
+        "href": "https://cal.example/dav/personal/invite-1@external.example.ics",
+        "created": True,
+        "updated": False,
+    }
+    request = route.calls.last.request
+    assert request.headers["If-None-Match"] == "*"
+    body = request.content.decode()
+    assert "ORGANIZER" in body
+    assert "ATTENDEE" in body
+    assert "TZID:America/New_York" in body
+    # CalDAV object resources must not carry the iTIP METHOD property.
+    assert "METHOD:REQUEST" not in body
+
+
+@respx.mock
+async def test_import_ics_updates_existing_event_by_uid() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_INVITE_FOUND_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/existing-invite.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await import_ics(_CONFIG, calendar_slug="personal", ics_text=_ICAL_INVITE)
+
+    assert result["created"] is False
+    assert result["updated"] is True
+    assert result["href"] == "https://cal.example/dav/personal/existing-invite.ics"
+    assert "If-None-Match" not in route.calls.last.request.headers
+
+
+@respx.mock
+async def test_import_ics_rejects_invalid_payloads() -> None:
+    with pytest.raises(ValueError):
+        await import_ics(_CONFIG, calendar_slug="personal", ics_text="not an ics")
+    with pytest.raises(ValueError, match="at least one VEVENT"):
+        await import_ics(
+            _CONFIG,
+            calendar_slug="personal",
+            ics_text="BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n",
+        )
+    two_uids = _ICAL_INVITE.replace(
+        "END:VCALENDAR",
+        "BEGIN:VEVENT\nUID:other@external.example\nDTSTART:20260716T100000Z\nEND:VEVENT\nEND:VCALENDAR",
+    )
+    with pytest.raises(ValueError, match="exactly one event UID"):
+        await import_ics(_CONFIG, calendar_slug="personal", ics_text=two_uids)
