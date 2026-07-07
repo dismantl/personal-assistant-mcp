@@ -11,6 +11,7 @@ import icalendar
 import pytest
 import respx
 
+from personal_assistant_mcp.calendar import client as calendar_client
 from personal_assistant_mcp.calendar.client import (
     CalDAVConfig,
     create_event,
@@ -329,6 +330,10 @@ END:VCALENDAR
 def _vevents_from_body(body: str) -> list[icalendar.Event]:
     calendar = icalendar.Calendar.from_ical(body)
     return [cast(icalendar.Event, component) for component in calendar.walk("VEVENT")]
+
+
+def test_calendar_client_exports_public_operations() -> None:
+    assert {"fetch_events_range", "import_ics"}.issubset(calendar_client.__all__)
 
 
 # -----------------------------------------------------------------------------

@@ -1007,6 +1007,8 @@ __all__ = [
     "create_event",
     "delete_event",
     "fetch_events",
+    "fetch_events_range",
+    "import_ics",
     "list_calendars",
     "rsvp_event",
     "update_event",
