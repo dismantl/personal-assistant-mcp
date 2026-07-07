@@ -737,11 +737,10 @@ async def import_ics(
     events = _event_components(calendar)
     if not events:
         raise ValueError("ics_text must contain at least one VEVENT")
-    uids = {str(event.get("UID", "")).strip() for event in events}
-    uids.discard("")
-    if len(uids) != 1:
+    uids = [str(event.get("UID", "")).strip() for event in events]
+    if any(not uid for uid in uids) or len(set(uids)) != 1:
         raise ValueError("ics_text must contain exactly one event UID")
-    event_uid = _validate_uid_text(uids.pop(), "ics_text UID")
+    event_uid = _validate_uid_text(uids[0], "ics_text UID")
     # CalDAV object resources must not carry an iTIP METHOD property
     # (RFC 4791 §4.1); emailed invites arrive with METHOD:REQUEST.
     if calendar.get("METHOD") is not None:

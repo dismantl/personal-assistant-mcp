@@ -1347,3 +1347,15 @@ async def test_import_ics_rejects_invalid_payloads() -> None:
     )
     with pytest.raises(ValueError, match="exactly one event UID"):
         await import_ics(_CONFIG, calendar_slug="personal", ics_text=two_uids)
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
+    respx.put("https://cal.example/dav/personal/invite-1@external.example.ics").mock(
+        return_value=httpx.Response(201)
+    )
+    missing_uid = _ICAL_INVITE.replace(
+        "END:VCALENDAR",
+        "BEGIN:VEVENT\nDTSTART:20260716T100000Z\nDTEND:20260716T110000Z\nEND:VEVENT\nEND:VCALENDAR",
+    )
+    with pytest.raises(ValueError, match="exactly one event UID"):
+        await import_ics(_CONFIG, calendar_slug="personal", ics_text=missing_uid)

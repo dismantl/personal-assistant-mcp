@@ -95,14 +95,16 @@ for mail operations.
 | `calendar_list` | List active CalDAV calendars. |
 | `calendar_today` | Fetch events for the next 24 hours in the configured vault timezone. |
 | `calendar_week` | Fetch events for the next seven days in the configured vault timezone. |
+| `calendar_events_range` | Fetch events within a timezone-aware ISO datetime range. |
 | `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes. |
+| `calendar_import_ics` | Import a raw iCalendar object into a calendar slug while preserving scheduling properties. |
 | `calendar_update_event` | Replace an event, or one recurring instance when `recurrence_id` is supplied, from timezone-aware ISO datetimes. |
 | `calendar_delete_event` | Delete an event, or one recurring instance when `recurrence_id` is supplied. |
 | `calendar_rsvp` | Update attendee status on an existing invitation while preserving CalDAV scheduling context. |
 
-`calendar_today` and `calendar_week` include each event's iCalendar `uid` and
-`calendar_slug`, plus `recurrence_id` for recurring instances, so listed events
-can be passed directly to the update/delete tools.
+`calendar_today`, `calendar_week`, and `calendar_events_range` include each
+event's iCalendar `uid` and `calendar_slug`, plus `recurrence_id` for recurring
+instances, so listed events can be passed directly to the update/delete tools.
 
 Calendar mutation tools use the `slug` returned by `calendar_list` as
 `calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
@@ -113,6 +115,8 @@ iCalendar UID, which does not need to match the CalDAV resource filename. To
 mutate a single recurring instance instead of the whole series, pass both `uid`
 and that listed instance's `recurrence_id`; updates write an iCalendar override
 and deletes add an exception date.
+`calendar_import_ics` upserts a raw iCalendar object by UID and preserves invite
+scheduling fields such as `ORGANIZER`, `ATTENDEE`, and `VTIMEZONE`.
 
 `calendar_rsvp` preserves the existing invitation resource and updates only the
 selected attendee `PARTSTAT`, so CalDAV scheduling can send the organizer a real
