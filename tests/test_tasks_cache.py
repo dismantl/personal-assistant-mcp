@@ -401,6 +401,44 @@ async def test_tasks_render_planner_uses_cache_and_adds_freshness(
     assert rendered["sections"][0]["tasks"][0]["body"] == "old planner task"
 
 
+async def test_tasks_render_planner_writes_markdown_to_default_path(
+    fake_vault: FakeVaultClient,
+) -> None:
+    task_tools = _register_task_tools(fake_vault)
+    _seed_default_spec(fake_vault)
+    fake_vault.notes["0 Logs/today.md"] = "- [ ] rendered planner task\n"
+
+    rendered = await task_tools["tasks_render_planner"]()
+
+    assert rendered["write_to"] == "TODO-rendered.md"
+    assert fake_vault.notes["TODO-rendered.md"] == rendered["markdown"]
+    assert "rendered planner task" in fake_vault.notes["TODO-rendered.md"]
+
+
+async def test_tasks_render_planner_can_compute_cache_before_rendering(
+    fake_vault: FakeVaultClient,
+) -> None:
+    task_tools = _register_task_tools(fake_vault)
+    _seed_default_spec(fake_vault)
+    fake_vault.notes["0 Logs/today.md"] = "- [ ] old cached task\n"
+    await task_tools["tasks_compute"]()
+    fake_vault.notes["0 Logs/today.md"] = "- [ ] freshly computed task\n"
+
+    rendered = await task_tools["tasks_render_planner"](
+        compute=True,
+        write_to="Planning/TODO.md",
+    )
+
+    cached_payload = json.loads(fake_vault.notes[CACHE_PATH])
+    assert rendered["source"] == "cache"
+    assert rendered["stale"] is False
+    assert rendered["write_to"] == "Planning/TODO.md"
+    assert [task["body"] for task in cached_payload["tasks"]] == ["freshly computed task"]
+    assert "freshly computed task" in rendered["markdown"]
+    assert "old cached task" not in rendered["markdown"]
+    assert fake_vault.notes["Planning/TODO.md"] == rendered["markdown"]
+
+
 async def test_tasks_render_planner_falls_back_live_when_cache_is_invalid(
     fake_vault: FakeVaultClient,
 ) -> None:

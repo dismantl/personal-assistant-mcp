@@ -312,19 +312,30 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
 
     @mcp.tool()
     @surface_tool_errors("tasks_render_planner")
-    async def tasks_render_planner(spec_path: str = planner.DEFAULT_SPEC_PATH) -> dict[str, Any]:
+    async def tasks_render_planner(
+        spec_path: str = planner.DEFAULT_SPEC_PATH,
+        compute: bool = False,
+        write_to: str = "TODO-rendered.md",
+    ) -> dict[str, Any]:
         """Render the TODO planner view from its frontmatter spec.
 
         Args:
             spec_path: vault path of the note holding the planner spec
                 (default ``TODO.md`` at the vault root).
+            compute: when true, recompute the task cache before rendering.
+            write_to: vault-relative path where the rendered markdown is written.
 
         Returns a dict with ``markdown`` (the rendered view) and ``sections``
         (each section's title + ordered task refs).
         """
         path = normalize_vault_path(spec_path)
+        output_path = normalize_vault_path(write_to)
         vault = get_vault()
-        payload = await cache.read_cache(vault)
+        payload = (
+            await cache.compute_cache(vault, spec_path=path)
+            if compute
+            else await cache.read_cache(vault)
+        )
         meta: dict[str, Any] | None = None
         if payload is not None and payload["spec_path"] == path:
             spec = await planner.load_planner_spec(vault, path)
@@ -340,8 +351,11 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
             }
         else:
             output = await planner.render_planner(vault, spec_path=path)
+        markdown = output.to_markdown()
+        await vault.write_note(output_path, markdown)
         return {
-            "markdown": output.to_markdown(),
+            "markdown": markdown,
+            "write_to": output_path,
             "sections": [
                 {
                     "title": section.title,
