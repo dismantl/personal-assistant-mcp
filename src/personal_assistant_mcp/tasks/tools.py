@@ -114,6 +114,23 @@ def _status_filter(statuses: str | None, *, include_closed: bool) -> tuple[str, 
     return OPEN_TASK_STATUSES
 
 
+def _validate_planner_output_path(
+    *,
+    spec_path: str,
+    write_to: str,
+    spec: planner.PlannerSpec,
+) -> None:
+    if write_to == spec_path:
+        raise ValueError("write_to must not be the same path as spec_path")
+    if planner._matches_source(write_to, spec) and not any(  # noqa: SLF001
+        frag in write_to for frag in spec.exclude_paths_containing
+    ):
+        raise ValueError(
+            "write_to must not match the planner source selection; choose an excluded path "
+            "or a path outside selected roots and basenames"
+        )
+
+
 async def _patch_cache_after_mutation(
     vault: ObsidianVaultClient,
     *paths: str,
@@ -331,6 +348,8 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         path = normalize_vault_path(spec_path)
         output_path = normalize_vault_path(write_to)
         vault = get_vault()
+        spec = await planner.load_planner_spec(vault, path)
+        _validate_planner_output_path(spec_path=path, write_to=output_path, spec=spec)
         payload = (
             await cache.compute_cache(vault, spec_path=path)
             if compute
@@ -338,7 +357,6 @@ def register(mcp: Any, get_vault: Callable[[], ObsidianVaultClient]) -> None:
         )
         meta: dict[str, Any] | None = None
         if payload is not None and payload["spec_path"] == path:
-            spec = await planner.load_planner_spec(vault, path)
             tasks_by_path: dict[str, list] = {}
             for task_data in payload["tasks"]:
                 ref = cache.dict_to_ref(task_data)
