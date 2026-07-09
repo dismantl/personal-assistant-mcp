@@ -58,6 +58,7 @@ _PARTSTAT_ALIASES = {
     "maybe": "TENTATIVE",
 }
 _ALLOWED_PARTSTATS = frozenset({"ACCEPTED", "DECLINED", "TENTATIVE"})
+_MAX_REMINDER_MINUTES = 40320  # 4 weeks; typo guard, not a hard product limit
 
 
 @dataclass(frozen=True)
@@ -377,6 +378,28 @@ def _update_attendee_partstat(
     return calendar.to_ical(), None
 
 
+def _build_reminder_alarms(minutes: list[int], summary: str) -> list[icalendar.Alarm]:
+    """Build DISPLAY alarms firing ``n`` minutes before start, deduped and sorted."""
+    description = summary.strip() or "Reminder"
+    unique: list[int] = []
+    for value in minutes:
+        if value < 0:
+            raise ValueError("reminders must be non-negative minutes before start")
+        if value > _MAX_REMINDER_MINUTES:
+            raise ValueError("reminders must be 40320 minutes (4 weeks) or less")
+        if value not in unique:
+            unique.append(value)
+
+    alarms: list[icalendar.Alarm] = []
+    for value in sorted(unique):
+        alarm = icalendar.Alarm()
+        alarm.add("action", "DISPLAY")
+        alarm.add("trigger", timedelta(minutes=-value))
+        alarm.add("description", description)
+        alarms.append(alarm)
+    return alarms
+
+
 def _build_event_component(
     *,
     uid: str,
@@ -386,6 +409,7 @@ def _build_event_component(
     recurrence_id: date | datetime | None = None,
     description: str | None = None,
     location: str | None = None,
+    alarms: list[icalendar.Alarm] | None = None,
 ) -> icalendar.Event:
     safe_uid = _validate_uid_text(uid, "uid")
     clean_summary = summary.strip()
@@ -409,6 +433,8 @@ def _build_event_component(
         event.add("description", description)
     if location is not None:
         event.add("location", location)
+    for alarm in alarms or []:
+        event.add_component(alarm)
     return event
 
 
@@ -420,6 +446,7 @@ def _build_event_ical(
     end: str,
     description: str | None = None,
     location: str | None = None,
+    alarms: list[icalendar.Alarm] | None = None,
 ) -> bytes:
     cal = icalendar.Calendar()
     cal.add("prodid", "-//personal-assistant-mcp//calendar//EN")
@@ -432,6 +459,7 @@ def _build_event_ical(
             end=end,
             description=description,
             location=location,
+            alarms=alarms,
         )
     )
     return cal.to_ical()
@@ -674,6 +702,7 @@ async def create_event(
     uid: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
@@ -687,6 +716,7 @@ async def create_event(
         end=end,
         description=description,
         location=location,
+        alarms=_build_reminder_alarms(reminders or [], summary),
     )
 
     own_client = http_client is None

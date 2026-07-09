@@ -666,6 +666,77 @@ async def test_create_event_serializes_offset_datetimes_as_utc() -> None:
 
 
 @respx.mock
+async def test_create_event_writes_display_alarms() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Dentist",
+        start="2026-05-11T14:00:00+00:00",
+        end="2026-05-11T15:00:00+00:00",
+        reminders=[60, 15, 15],
+    )
+
+    body = route.calls.last.request.content.decode()
+    assert body.count("BEGIN:VALARM") == 2
+    assert "ACTION:DISPLAY" in body
+    assert "DESCRIPTION:Dentist" in body
+    assert body.index("TRIGGER:-PT15M") < body.index("TRIGGER:-PT1H")
+
+
+@respx.mock
+async def test_create_event_without_reminders_has_no_alarm() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Dentist",
+        start="2026-05-11T14:00:00+00:00",
+        end="2026-05-11T15:00:00+00:00",
+    )
+
+    assert "BEGIN:VALARM" not in route.calls.last.request.content.decode()
+
+
+async def test_create_event_rejects_negative_reminder() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            summary="Dentist",
+            start="2026-05-11T14:00:00+00:00",
+            end="2026-05-11T15:00:00+00:00",
+            reminders=[-5],
+        )
+
+
+async def test_create_event_rejects_over_cap_reminder() -> None:
+    with pytest.raises(ValueError, match="4 weeks"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            summary="Dentist",
+            start="2026-05-11T14:00:00+00:00",
+            end="2026-05-11T15:00:00+00:00",
+            reminders=[40321],
+        )
+
+
+@respx.mock
 async def test_create_event_accepts_non_path_uid_with_safe_resource_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
