@@ -9,6 +9,7 @@ from typing import cast
 import httpx
 import icalendar
 import pytest
+import recurring_ical_events
 import respx
 
 from personal_assistant_mcp.calendar import client as calendar_client
@@ -1361,9 +1362,46 @@ async def test_update_event_preserves_whole_recurring_series_metadata() -> None:
     assert master.get("DTSTART").dt.isoformat() == "2026-05-11T09:30:00-04:00"
     assert str(master.get("RRULE").get("FREQ")[0]) == "DAILY"
     assert master.get("RRULE").get("COUNT") == [5]
-    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc)
+    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc)
     assert str(override.get("SUMMARY")) == "Moved standup"
-    assert override.get("RECURRENCE-ID").dt == datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc)
+    assert override.get("RECURRENCE-ID").dt == datetime(2026, 5, 12, 13, 30, tzinfo=timezone.utc)
+
+
+@respx.mock
+async def test_update_event_rekeys_exceptions_when_series_start_moves() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_OVERRIDE_EXDATE_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Daily standup moved",
+        start="2026-05-11T09:30:00-04:00 (America/New_York)",
+        end="2026-05-11T10:30:00-04:00 (America/New_York)",
+    )
+
+    body = route.calls.last.request.content.decode()
+    calendar = _calendar_from_body(body)
+    events = _vevents_from_body(body)
+    master = next(event for event in events if event.get("RECURRENCE-ID") is None)
+    override = next(event for event in events if event.get("RECURRENCE-ID") is not None)
+
+    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc)
+    assert override.get("RECURRENCE-ID").dt == datetime(2026, 5, 12, 13, 30, tzinfo=timezone.utc)
+
+    expanded = recurring_ical_events.of(calendar).between(
+        datetime(2026, 5, 11, tzinfo=timezone.utc),
+        datetime(2026, 5, 16, tzinfo=timezone.utc),
+    )
+    expanded_starts = [event.get("DTSTART").dt for event in expanded]
+    assert datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc) not in expanded_starts
+    assert datetime(2026, 5, 12, 16, 0, tzinfo=timezone.utc) in expanded_starts
+    assert expanded_starts.count(datetime(2026, 5, 12, 16, 0, tzinfo=timezone.utc)) == 1
 
 
 @respx.mock
@@ -1394,7 +1432,7 @@ async def test_update_event_replaces_whole_series_rrule() -> None:
     assert str(master.get("RRULE").get("FREQ")[0]) == "WEEKLY"
     assert [str(day) for day in master.get("RRULE").get("BYDAY")] == ["MO", "WE"]
     assert master.get("RRULE").get("COUNT") == [4]
-    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc)
+    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc)
 
 
 @respx.mock
@@ -1458,7 +1496,7 @@ async def test_update_event_preserves_rdate_series_when_rrule_omitted() -> None:
     event = events[0]
     assert str(event.get("SUMMARY")) == "Extra standup moved"
     assert event.get("DTSTART").dt == datetime(2026, 5, 11, 14, 30, tzinfo=timezone.utc)
-    assert event.get("RDATE").dts[0].dt == datetime(2026, 5, 18, 14, 0, tzinfo=timezone.utc)
+    assert event.get("RDATE").dts[0].dt == datetime(2026, 5, 18, 14, 30, tzinfo=timezone.utc)
 
 
 async def test_update_event_rejects_rrule_with_recurrence_id() -> None:

@@ -610,6 +610,86 @@ def _component_values(component: icalendar.Event, prop_name: str) -> list[Any]:
     return parsed
 
 
+def _temporal_kind(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return "datetime"
+    if isinstance(value, date):
+        return "date"
+    return None
+
+
+def _shift_temporal_value(value: Any, delta: timedelta) -> Any:
+    if isinstance(value, datetime):
+        return value + delta
+    if isinstance(value, date):
+        return value + delta
+    return value
+
+
+def _shift_component_values(component: icalendar.Event, prop_name: str, delta: timedelta) -> None:
+    values = _component_values(component, prop_name)
+    if not values:
+        return
+
+    component.pop(prop_name, None)
+    for value in values:
+        component.add(prop_name.lower(), _shift_temporal_value(value, delta))
+
+
+def _recurrence_overrides(calendar: icalendar.Calendar, uid: str) -> list[icalendar.Event]:
+    return [
+        component
+        for component in _event_components(calendar)
+        if str(component.get("UID", "")) == uid and component.get("RECURRENCE-ID") is not None
+    ]
+
+
+def _shift_recurring_exception_metadata(
+    calendar: icalendar.Calendar,
+    *,
+    uid: str,
+    master: icalendar.Event,
+    old_start: date | datetime,
+    new_start: date | datetime,
+) -> None:
+    if _same_ical_value(old_start, new_start):
+        return
+
+    overrides = _recurrence_overrides(calendar, uid)
+    if master.get("EXDATE") is None and master.get("RDATE") is None and not overrides:
+        return
+
+    old_kind = _temporal_kind(old_start)
+    if old_kind != _temporal_kind(new_start):
+        raise ValueError(
+            "cannot change recurring event between all-day and timed while exceptions exist"
+        )
+    if old_kind == "datetime":
+        if not isinstance(old_start, datetime) or not isinstance(new_start, datetime):
+            raise TypeError("recurrence exception start kind mismatch")
+        try:
+            delta = new_start - old_start
+        except TypeError as exc:
+            raise ValueError(
+                "cannot shift recurring exceptions between floating and timezone-aware times"
+            ) from exc
+    else:
+        if not isinstance(old_start, date) or not isinstance(new_start, date):
+            raise TypeError("recurrence exception start kind mismatch")
+        delta = new_start - old_start
+
+    _shift_component_values(master, "EXDATE", delta)
+    _shift_component_values(master, "RDATE", delta)
+    for component in overrides:
+        recurrence_id = component.get("RECURRENCE-ID")
+        if recurrence_id is not None:
+            _replace_component_value(
+                component,
+                "RECURRENCE-ID",
+                _shift_temporal_value(recurrence_id.dt, delta),
+            )
+
+
 def _recurrence_id_matches(component: icalendar.Event, recurrence_id: date | datetime) -> bool:
     existing = component.get("RECURRENCE-ID")
     return existing is not None and _same_ical_value(existing.dt, recurrence_id)
@@ -763,9 +843,17 @@ def _build_whole_series_update_ical(
         next_rrule = _validate_rrule_text(rrule)
     collapse_recurrence = rrule == ""
 
-    # Existing overrides remain keyed to their original recurrence IDs; callers
-    # that shift a series DTSTART may need to review those exceptions manually.
+    old_dtstart = master.get("DTSTART")
+    old_start = old_dtstart.dt if old_dtstart is not None else None
     times = _event_time_values(config=config, start=start, end=end, rrule=next_rrule)
+    if not collapse_recurrence and old_start is not None:
+        _shift_recurring_exception_metadata(
+            calendar,
+            uid=uid,
+            master=master,
+            old_start=old_start,
+            new_start=times.start,
+        )
     _replace_component_value(master, "SUMMARY", clean_summary)
     _replace_component_value(master, "DTSTART", times.start)
     _replace_component_value(master, "DTEND", times.end)
