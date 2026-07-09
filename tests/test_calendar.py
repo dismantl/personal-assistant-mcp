@@ -423,6 +423,30 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_PERIOD_RDATE_RECURRING_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/period-rdate-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:period-rdate-123
+SUMMARY:Extra block
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RDATE;VALUE=PERIOD:20260518T140000Z/20260518T150000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_RECURRING_OVERRIDE_WITH_ALARM_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
   <d:response>
@@ -1497,6 +1521,33 @@ async def test_update_event_preserves_rdate_series_when_rrule_omitted() -> None:
     assert str(event.get("SUMMARY")) == "Extra standup moved"
     assert event.get("DTSTART").dt == datetime(2026, 5, 11, 14, 30, tzinfo=timezone.utc)
     assert event.get("RDATE").dts[0].dt == datetime(2026, 5, 18, 14, 30, tzinfo=timezone.utc)
+
+
+@respx.mock
+async def test_update_event_preserves_period_rdate_when_series_start_moves() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_PERIOD_RDATE_RECURRING_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/period-rdate-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="period-rdate-123",
+        summary="Extra block moved",
+        start="2026-05-11T14:30:00+00:00",
+        end="2026-05-11T15:30:00+00:00",
+    )
+
+    body = route.calls.last.request.content.decode()
+    event = _vevents_from_body(body)[0]
+    assert event.get("RDATE").dts[0].dt == (
+        datetime(2026, 5, 18, 14, 30, tzinfo=timezone.utc),
+        datetime(2026, 5, 18, 15, 30, tzinfo=timezone.utc),
+    )
+    assert "RDATE;VALUE=PERIOD:20260518T143000Z/20260518T153000Z" in body
 
 
 async def test_update_event_rejects_rrule_with_recurrence_id() -> None:

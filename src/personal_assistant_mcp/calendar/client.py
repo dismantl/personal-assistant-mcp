@@ -619,6 +619,8 @@ def _temporal_kind(value: Any) -> str | None:
 
 
 def _shift_temporal_value(value: Any, delta: timedelta) -> Any:
+    if isinstance(value, tuple):
+        return tuple(_shift_temporal_value(item, delta) for item in value)
     if isinstance(value, datetime):
         return value + delta
     if isinstance(value, date):
@@ -627,13 +629,18 @@ def _shift_temporal_value(value: Any, delta: timedelta) -> Any:
 
 
 def _shift_component_values(component: icalendar.Event, prop_name: str, delta: timedelta) -> None:
-    values = _component_values(component, prop_name)
-    if not values:
+    values = component.get(prop_name)
+    if values is None:
         return
+    if not isinstance(values, list):
+        values = [values]
 
-    component.pop(prop_name, None)
     for value in values:
-        component.add(prop_name.lower(), _shift_temporal_value(value, delta))
+        if hasattr(value, "dts"):
+            for item in value.dts:
+                item.dt = _shift_temporal_value(item.dt, delta)
+        elif hasattr(value, "dt"):
+            value.dt = _shift_temporal_value(value.dt, delta)
 
 
 def _recurrence_overrides(calendar: icalendar.Calendar, uid: str) -> list[icalendar.Event]:
