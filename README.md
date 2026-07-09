@@ -96,15 +96,18 @@ for mail operations.
 | `calendar_today` | Fetch events for the next 24 hours in the configured vault timezone. |
 | `calendar_week` | Fetch events for the next seven days in the configured vault timezone. |
 | `calendar_events_range` | Fetch events within a timezone-aware ISO datetime range. |
-| `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes. |
+| `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes, with optional minutes-before reminders. |
 | `calendar_import_ics` | Import a raw iCalendar object into a calendar slug while preserving scheduling properties. |
-| `calendar_update_event` | Replace an event, or one recurring instance when `recurrence_id` is supplied, from timezone-aware ISO datetimes. |
+| `calendar_update_event` | Replace an event, or one recurring instance when `recurrence_id` is supplied, from timezone-aware ISO datetimes; reminders are preserved unless overridden. |
 | `calendar_delete_event` | Delete an event, or one recurring instance when `recurrence_id` is supplied. |
 | `calendar_rsvp` | Update attendee status on an existing invitation while preserving CalDAV scheduling context. |
 
 `calendar_today`, `calendar_week`, and `calendar_events_range` include each
 event's iCalendar `uid` and `calendar_slug`, plus `recurrence_id` for recurring
 instances, so listed events can be passed directly to the update/delete tools.
+Each event also includes a `reminders` field when it has alarms: a list of
+whole minutes before start (e.g. `[15, 60]`), with any non-standard alarm
+surfaced as its raw iCalendar trigger string.
 
 Calendar mutation tools use the `slug` returned by `calendar_list` as
 `calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
@@ -117,6 +120,11 @@ and that listed instance's `recurrence_id`; updates write an iCalendar override
 and deletes add an exception date.
 `calendar_import_ics` upserts a raw iCalendar object by UID and preserves invite
 scheduling fields such as `ORGANIZER`, `ATTENDEE`, and `VTIMEZONE`.
+`calendar_create_event` and `calendar_update_event` accept a `reminders` list
+of minutes before start, each written as a `DISPLAY` alarm (e.g. `[15, 60]` ->
+popups 15 minutes and 1 hour before). On update, omitting `reminders` keeps the
+event's existing alarms, `[]` clears them, and a list replaces them; note this
+differs from `description`/`location`, which are dropped when omitted.
 
 `calendar_rsvp` preserves the existing invitation resource and updates only the
 selected attendee `PARTSTAT`, so CalDAV scheduling can send the organizer a real
