@@ -58,6 +58,7 @@ _PARTSTAT_ALIASES = {
     "maybe": "TENTATIVE",
 }
 _ALLOWED_PARTSTATS = frozenset({"ACCEPTED", "DECLINED", "TENTATIVE"})
+_MAX_REMINDER_MINUTES = 40320  # 4 weeks; typo guard, not a hard product limit
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,32 @@ def _format_ical_value(value: Any) -> str:
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
+
+
+def _event_reminders(component: icalendar.Event) -> list[int | str]:
+    """Reminders as minutes-before-start ints; exotic triggers as raw strings."""
+    minutes: list[int] = []
+    others: list[str] = []
+    for alarm in component.subcomponents:
+        if getattr(alarm, "name", "") != "VALARM":
+            continue
+        trigger = alarm.get("TRIGGER")
+        if trigger is None:
+            continue
+        value = trigger.dt
+        related = str(trigger.params.get("RELATED", "START")).upper()
+        if isinstance(value, timedelta) and related == "START":
+            total_seconds = value.total_seconds()
+            before_minutes = -total_seconds / 60
+            if total_seconds <= 0 and before_minutes == int(before_minutes):
+                minutes.append(int(before_minutes))
+                continue
+        others.append(trigger.to_ical().decode("utf-8"))
+
+    result: list[int | str] = []
+    result.extend(sorted(minutes))
+    result.extend(sorted(others))
+    return result
 
 
 def _window(
@@ -377,6 +404,37 @@ def _update_attendee_partstat(
     return calendar.to_ical(), None
 
 
+def _build_reminder_alarms(minutes: list[int], summary: str) -> list[icalendar.Alarm]:
+    """Build DISPLAY alarms firing ``n`` minutes before start, deduped and sorted."""
+    description = summary.strip() or "Reminder"
+    unique: list[int] = []
+    for value in minutes:
+        if value < 0:
+            raise ValueError("reminders must be non-negative minutes before start")
+        if value > _MAX_REMINDER_MINUTES:
+            raise ValueError("reminders must be 40320 minutes (4 weeks) or less")
+        if value not in unique:
+            unique.append(value)
+
+    alarms: list[icalendar.Alarm] = []
+    for value in sorted(unique):
+        alarm = icalendar.Alarm()
+        alarm.add("action", "DISPLAY")
+        alarm.add("trigger", timedelta(minutes=-value))
+        alarm.add("description", description)
+        alarms.append(alarm)
+    return alarms
+
+
+def _extract_alarms(component: icalendar.Event) -> list[icalendar.Alarm]:
+    """Deep-copy the VALARM sub-components off an existing event."""
+    return [
+        cast(icalendar.Alarm, copy.deepcopy(sub))
+        for sub in component.subcomponents
+        if getattr(sub, "name", "") == "VALARM"
+    ]
+
+
 def _build_event_component(
     *,
     uid: str,
@@ -386,6 +444,7 @@ def _build_event_component(
     recurrence_id: date | datetime | None = None,
     description: str | None = None,
     location: str | None = None,
+    alarms: list[icalendar.Alarm] | None = None,
 ) -> icalendar.Event:
     safe_uid = _validate_uid_text(uid, "uid")
     clean_summary = summary.strip()
@@ -409,6 +468,8 @@ def _build_event_component(
         event.add("description", description)
     if location is not None:
         event.add("location", location)
+    for alarm in alarms or []:
+        event.add_component(alarm)
     return event
 
 
@@ -420,6 +481,7 @@ def _build_event_ical(
     end: str,
     description: str | None = None,
     location: str | None = None,
+    alarms: list[icalendar.Alarm] | None = None,
 ) -> bytes:
     cal = icalendar.Calendar()
     cal.add("prodid", "-//personal-assistant-mcp//calendar//EN")
@@ -432,6 +494,7 @@ def _build_event_ical(
             end=end,
             description=description,
             location=location,
+            alarms=alarms,
         )
     )
     return cal.to_ical()
@@ -474,6 +537,17 @@ def _find_master_event(calendar: icalendar.Calendar, uid: str) -> icalendar.Even
     return None
 
 
+def _find_recurrence_override(
+    calendar: icalendar.Calendar, uid: str, recurrence_id: date | datetime
+) -> icalendar.Event | None:
+    for component in _event_components(calendar):
+        if str(component.get("UID", "")) == uid and _recurrence_id_matches(
+            component, recurrence_id
+        ):
+            return component
+    return None
+
+
 def _remove_recurrence_override(
     calendar: icalendar.Calendar, uid: str, recurrence_id: date | datetime
 ) -> None:
@@ -498,10 +572,18 @@ def _build_recurring_instance_update_ical(
     end: str,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
 ) -> bytes | None:
     calendar = _parse_calendar(calendar_data)
-    if _find_master_event(calendar, uid) is None:
+    master = _find_master_event(calendar, uid)
+    if master is None:
         return None
+
+    if reminders is not None:
+        alarms = _build_reminder_alarms(reminders, summary)
+    else:
+        source = _find_recurrence_override(calendar, uid, recurrence_id) or master
+        alarms = _extract_alarms(source)
 
     _remove_recurrence_override(calendar, uid, recurrence_id)
     calendar.add_component(
@@ -513,6 +595,7 @@ def _build_recurring_instance_update_ical(
             end=end,
             description=description,
             location=location,
+            alarms=alarms,
         )
     )
     return calendar.to_ical()
@@ -655,6 +738,8 @@ async def _fetch_events_between(
                 if (description := event.get("DESCRIPTION")) is not None:
                     text = str(description)
                     row["description"] = text[:200] + ("..." if len(text) > 200 else "")
+                if reminders := _event_reminders(event):
+                    row["reminders"] = reminders
                 events.append(row)
     finally:
         if own_client:
@@ -674,6 +759,7 @@ async def create_event(
     uid: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
@@ -687,6 +773,7 @@ async def create_event(
         end=end,
         description=description,
         location=location,
+        alarms=_build_reminder_alarms(reminders or [], summary),
     )
 
     own_client = http_client is None
@@ -783,6 +870,7 @@ async def update_event(
     recurrence_id: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Replace a CalDAV event resource or one recurrence instance by UID."""
@@ -805,6 +893,11 @@ async def update_event(
 
         body: bytes | None
         if parsed_recurrence_id is None:
+            if reminders is not None:
+                alarms = _build_reminder_alarms(reminders, summary)
+            else:
+                master = _find_master_event(_parse_calendar(resource.calendar_data), event_uid)
+                alarms = _extract_alarms(master) if master is not None else []
             body = _build_event_ical(
                 uid=event_uid,
                 summary=summary,
@@ -812,6 +905,7 @@ async def update_event(
                 end=end,
                 description=description,
                 location=location,
+                alarms=alarms,
             )
         else:
             body = _build_recurring_instance_update_ical(
@@ -823,6 +917,7 @@ async def update_event(
                 end=end,
                 description=description,
                 location=location,
+                reminders=reminders,
             )
             if body is None:
                 return {
