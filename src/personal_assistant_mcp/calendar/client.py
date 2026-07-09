@@ -112,6 +112,32 @@ def _format_ical_value(value: Any) -> str:
     return str(value)
 
 
+def _event_reminders(component: icalendar.Event) -> list[int | str]:
+    """Reminders as minutes-before-start ints; exotic triggers as raw strings."""
+    minutes: list[int] = []
+    others: list[str] = []
+    for alarm in component.subcomponents:
+        if getattr(alarm, "name", "") != "VALARM":
+            continue
+        trigger = alarm.get("TRIGGER")
+        if trigger is None:
+            continue
+        value = trigger.dt
+        related = str(trigger.params.get("RELATED", "START")).upper()
+        if isinstance(value, timedelta) and related == "START":
+            total_seconds = value.total_seconds()
+            before_minutes = -total_seconds / 60
+            if total_seconds <= 0 and before_minutes == int(before_minutes):
+                minutes.append(int(before_minutes))
+                continue
+        others.append(trigger.to_ical().decode("utf-8"))
+
+    result: list[int | str] = []
+    result.extend(sorted(minutes))
+    result.extend(sorted(others))
+    return result
+
+
 def _window(
     config: CalDAVConfig, kind: str, now: datetime | None = None
 ) -> tuple[datetime, datetime]:
@@ -712,6 +738,8 @@ async def _fetch_events_between(
                 if (description := event.get("DESCRIPTION")) is not None:
                     text = str(description)
                     row["description"] = text[:200] + ("..." if len(text) > 200 else "")
+                if reminders := _event_reminders(event):
+                    row["reminders"] = reminders
                 events.append(row)
     finally:
         if own_client:

@@ -105,6 +105,45 @@ END:VEVENT
 END:VCALENDAR
 """
 
+_ICAL_PERSONAL_WITH_ALARMS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:alarmed@test
+SUMMARY:Reminder event
+DTSTART:20260511T140000Z
+DTEND:20260511T143000Z
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Reminder event
+TRIGGER:-PT1H
+END:VALARM
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Reminder event
+TRIGGER:-PT15M
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+"""
+
+_ICAL_PERSONAL_EXOTIC_ALARM = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:exotic@test
+SUMMARY:Exotic event
+DTSTART:20260511T140000Z
+DTEND:20260511T143000Z
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Exotic event
+TRIGGER:PT30M
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+"""
+
 _ICAL_HOLIDAYS = """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Test//
@@ -539,6 +578,60 @@ async def test_fetch_events_extracts_location_and_description() -> None:
     assert standup["location"] == "Zoom"
     assert standup["description"] == "Daily team sync"
     assert standup["calendar"] == "Personal"
+
+
+@respx.mock
+async def test_fetch_events_exposes_reminders_as_minutes() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_PERSONAL_WITH_ALARMS)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_HOLIDAYS)
+    )
+
+    events = await fetch_events(_CONFIG, "today", now=_FIXED_NOW)
+
+    alarmed = next(e for e in events if e["summary"] == "Reminder event")
+    assert alarmed["reminders"] == [15, 60]
+
+
+@respx.mock
+async def test_fetch_events_omits_reminders_field_when_absent() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_PERSONAL)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_HOLIDAYS)
+    )
+
+    events = await fetch_events(_CONFIG, "today", now=_FIXED_NOW)
+
+    standup = next(e for e in events if e["summary"] == "Standup")
+    assert "reminders" not in standup
+
+
+@respx.mock
+async def test_fetch_events_surfaces_exotic_alarm_as_raw_trigger() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_PERSONAL_EXOTIC_ALARM)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text=_ICAL_HOLIDAYS)
+    )
+
+    events = await fetch_events(_CONFIG, "today", now=_FIXED_NOW)
+
+    exotic = next(e for e in events if e["summary"] == "Exotic event")
+    assert exotic["reminders"] == ["PT30M"]
 
 
 @respx.mock
