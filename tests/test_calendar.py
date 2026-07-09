@@ -267,6 +267,35 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_RECURRING_WITH_ALARM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/recurring-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:recurring-123
+SUMMARY:Daily standup
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RRULE:FREQ=DAILY;COUNT=3
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Daily standup
+TRIGGER:-PT10M
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_RECURRING_OVERRIDE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
   <d:response>
@@ -289,6 +318,47 @@ RECURRENCE-ID:20260512T140000Z
 SUMMARY:Moved standup
 DTSTART:20260512T160000Z
 DTEND:20260512T170000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
+_REPORT_RECURRING_OVERRIDE_WITH_ALARM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/recurring-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:recurring-123
+SUMMARY:Daily standup
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RRULE:FREQ=DAILY;COUNT=3
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Daily standup
+TRIGGER:-PT10M
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:recurring-123
+RECURRENCE-ID:20260512T140000Z
+SUMMARY:Moved standup
+DTSTART:20260512T160000Z
+DTEND:20260512T170000Z
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Moved standup
+TRIGGER:-PT5M
+END:VALARM
 END:VEVENT
 END:VCALENDAR
 ]]></cal:calendar-data>
@@ -357,6 +427,22 @@ END:VCALENDAR
 def _vevents_from_body(body: str) -> list[icalendar.Event]:
     calendar = icalendar.Calendar.from_ical(body)
     return [cast(icalendar.Event, component) for component in calendar.walk("VEVENT")]
+
+
+def _override_vevent(body: str, recurrence_id: str) -> icalendar.Event:
+    for vevent in _vevents_from_body(body):
+        rid = vevent.get("RECURRENCE-ID")
+        if rid is not None and rid.to_ical().decode() == recurrence_id:
+            return vevent
+    raise AssertionError(f"no override for {recurrence_id}")
+
+
+def _vevent_triggers(vevent: icalendar.Event) -> list[str]:
+    return [
+        sub.get("TRIGGER").to_ical().decode()
+        for sub in vevent.subcomponents
+        if getattr(sub, "name", "") == "VALARM"
+    ]
 
 
 def test_calendar_client_exports_public_operations() -> None:
@@ -1095,6 +1181,100 @@ async def test_update_event_updates_one_recurring_instance() -> None:
     assert override.get("DTEND").dt == datetime(2026, 5, 12, 17, 0, tzinfo=timezone.utc)
     assert str(override.get("DESCRIPTION")) == "One-off shift"
     assert str(override.get("LOCATION")) == "Room 2"
+
+
+@respx.mock
+async def test_update_recurring_instance_replaces_reminders() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Moved standup",
+        start="2026-05-12T16:00:00+00:00",
+        end="2026-05-12T17:00:00+00:00",
+        recurrence_id="2026-05-12T14:00:00+00:00",
+        reminders=[45],
+    )
+
+    override = _override_vevent(route.calls.last.request.content.decode(), "20260512T140000Z")
+    assert _vevent_triggers(override) == ["-PT45M"]
+
+
+@respx.mock
+async def test_update_recurring_instance_inherits_master_reminders_when_omitted() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_WITH_ALARM_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Moved standup",
+        start="2026-05-12T16:00:00+00:00",
+        end="2026-05-12T17:00:00+00:00",
+        recurrence_id="2026-05-12T14:00:00+00:00",
+    )
+
+    override = _override_vevent(route.calls.last.request.content.decode(), "20260512T140000Z")
+    assert _vevent_triggers(override) == ["-PT10M"]
+
+
+@respx.mock
+async def test_update_recurring_instance_preserve_existing_override_reminders() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_OVERRIDE_WITH_ALARM_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Moved standup again",
+        start="2026-05-12T18:00:00+00:00",
+        end="2026-05-12T19:00:00+00:00",
+        recurrence_id="2026-05-12T14:00:00+00:00",
+    )
+
+    override = _override_vevent(route.calls.last.request.content.decode(), "20260512T140000Z")
+    assert _vevent_triggers(override) == ["-PT5M"]
+
+
+@respx.mock
+async def test_update_recurring_instance_clears_reminders_with_empty_list() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_WITH_ALARM_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Moved standup",
+        start="2026-05-12T16:00:00+00:00",
+        end="2026-05-12T17:00:00+00:00",
+        recurrence_id="2026-05-12T14:00:00+00:00",
+        reminders=[],
+    )
+
+    override = _override_vevent(route.calls.last.request.content.decode(), "20260512T140000Z")
+    assert _vevent_triggers(override) == []
 
 
 @respx.mock

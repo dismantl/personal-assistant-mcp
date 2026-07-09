@@ -511,6 +511,17 @@ def _find_master_event(calendar: icalendar.Calendar, uid: str) -> icalendar.Even
     return None
 
 
+def _find_recurrence_override(
+    calendar: icalendar.Calendar, uid: str, recurrence_id: date | datetime
+) -> icalendar.Event | None:
+    for component in _event_components(calendar):
+        if str(component.get("UID", "")) == uid and _recurrence_id_matches(
+            component, recurrence_id
+        ):
+            return component
+    return None
+
+
 def _remove_recurrence_override(
     calendar: icalendar.Calendar, uid: str, recurrence_id: date | datetime
 ) -> None:
@@ -535,10 +546,18 @@ def _build_recurring_instance_update_ical(
     end: str,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
 ) -> bytes | None:
     calendar = _parse_calendar(calendar_data)
-    if _find_master_event(calendar, uid) is None:
+    master = _find_master_event(calendar, uid)
+    if master is None:
         return None
+
+    if reminders is not None:
+        alarms = _build_reminder_alarms(reminders, summary)
+    else:
+        source = _find_recurrence_override(calendar, uid, recurrence_id) or master
+        alarms = _extract_alarms(source)
 
     _remove_recurrence_override(calendar, uid, recurrence_id)
     calendar.add_component(
@@ -550,6 +569,7 @@ def _build_recurring_instance_update_ical(
             end=end,
             description=description,
             location=location,
+            alarms=alarms,
         )
     )
     return calendar.to_ical()
@@ -869,6 +889,7 @@ async def update_event(
                 end=end,
                 description=description,
                 location=location,
+                reminders=reminders,
             )
             if body is None:
                 return {
