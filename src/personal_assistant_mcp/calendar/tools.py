@@ -91,8 +91,15 @@ def register(mcp: Any) -> None:
         recurrence_id: str | None = None,
         description: str | None = None,
         location: str | None = None,
+        reminders: list[int] | None = None,
     ) -> dict[str, Any]:
-        """Replace a CalDAV event or recurrence instance using ISO datetimes."""
+        """Replace a CalDAV event or recurrence instance using ISO datetimes.
+
+        reminders: minutes before start for DISPLAY alarms, e.g. [15, 60].
+        Omit (None) to keep existing reminders, pass [] to clear them, or a
+        list to replace them. This differs from description/location, which
+        are dropped when omitted.
+        """
         return await caldav.update_event(
             caldav.CalDAVConfig.from_env(),
             calendar_slug=calendar_slug,
@@ -103,6 +110,7 @@ def register(mcp: Any) -> None:
             recurrence_id=recurrence_id,
             description=description,
             location=location,
+            reminders=reminders,
         )
 
     @mcp.tool()

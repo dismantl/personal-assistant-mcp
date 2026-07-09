@@ -139,6 +139,33 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_EVENT_WITH_ALARM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/server-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-123
+SUMMARY:Existing event
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Existing event
+TRIGGER:-PT15M
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_INVITE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
   <d:response>
@@ -825,6 +852,75 @@ async def test_update_event_replaces_ical_calendar_resource() -> None:
     assert "SUMMARY:Dentist moved" in body
     assert "DTSTART:20260511T160000Z" in body
     assert "DTEND:20260511T170000Z" in body
+
+
+@respx.mock
+async def test_update_event_replaces_reminders() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EVENT_WITH_ALARM_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/server-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Existing event",
+        start="2026-05-11T14:00:00+00:00",
+        end="2026-05-11T15:00:00+00:00",
+        reminders=[30],
+    )
+
+    body = route.calls.last.request.content.decode()
+    assert body.count("BEGIN:VALARM") == 1
+    assert "TRIGGER:-PT30M" in body
+    assert "TRIGGER:-PT15M" not in body
+
+
+@respx.mock
+async def test_update_event_clears_reminders_with_empty_list() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EVENT_WITH_ALARM_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/server-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Existing event",
+        start="2026-05-11T14:00:00+00:00",
+        end="2026-05-11T15:00:00+00:00",
+        reminders=[],
+    )
+
+    assert "BEGIN:VALARM" not in route.calls.last.request.content.decode()
+
+
+@respx.mock
+async def test_update_event_preserves_reminders_when_omitted() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EVENT_WITH_ALARM_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/server-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Renamed event",
+        start="2026-05-11T14:00:00+00:00",
+        end="2026-05-11T16:00:00+00:00",
+    )
+
+    body = route.calls.last.request.content.decode()
+    assert "TRIGGER:-PT15M" in body
 
 
 @respx.mock

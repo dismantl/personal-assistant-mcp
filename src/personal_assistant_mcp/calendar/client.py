@@ -400,6 +400,15 @@ def _build_reminder_alarms(minutes: list[int], summary: str) -> list[icalendar.A
     return alarms
 
 
+def _extract_alarms(component: icalendar.Event) -> list[icalendar.Alarm]:
+    """Deep-copy the VALARM sub-components off an existing event."""
+    return [
+        cast(icalendar.Alarm, copy.deepcopy(sub))
+        for sub in component.subcomponents
+        if getattr(sub, "name", "") == "VALARM"
+    ]
+
+
 def _build_event_component(
     *,
     uid: str,
@@ -813,6 +822,7 @@ async def update_event(
     recurrence_id: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Replace a CalDAV event resource or one recurrence instance by UID."""
@@ -835,6 +845,11 @@ async def update_event(
 
         body: bytes | None
         if parsed_recurrence_id is None:
+            if reminders is not None:
+                alarms = _build_reminder_alarms(reminders, summary)
+            else:
+                master = _find_master_event(_parse_calendar(resource.calendar_data), event_uid)
+                alarms = _extract_alarms(master) if master is not None else []
             body = _build_event_ical(
                 uid=event_uid,
                 summary=summary,
@@ -842,6 +857,7 @@ async def update_event(
                 end=end,
                 description=description,
                 location=location,
+                alarms=alarms,
             )
         else:
             body = _build_recurring_instance_update_ical(
