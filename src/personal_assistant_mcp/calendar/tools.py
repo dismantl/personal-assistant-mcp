@@ -62,11 +62,21 @@ def register(mcp: Any) -> None:
         description: str | None = None,
         location: str | None = None,
         reminders: list[int] | None = None,
+        rrule: str | None = None,
     ) -> dict[str, Any]:
-        """Create a CalDAV event from ISO datetimes in a calendar slug.
+        """Create a CalDAV event, optionally as a recurring RRULE series.
 
         reminders: minutes before start for DISPLAY alarms, e.g. [15, 60].
         Omit or pass None for no reminders.
+        rrule: raw RRULE string, e.g. every weekday
+        FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR; every 2 weeks Mon/Wed
+        FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE; last Friday monthly
+        FREQ=MONTHLY;BYDAY=-1FR; yearly FREQ=YEARLY.
+        For recurring timed events, add a display timezone suffix such as
+        2026-05-11T09:00:00-04:00 (America/New_York). Without the suffix,
+        the configured calendar timezone anchors the local recurrence pattern.
+        All-day events use YYYY-MM-DD for start/end; DTEND is exclusive, so
+        pass the day after the final all-day date.
         """
         return await caldav.create_event(
             caldav.CalDAVConfig.from_env(),
@@ -78,6 +88,7 @@ def register(mcp: Any) -> None:
             description=description,
             location=location,
             reminders=reminders,
+            rrule=rrule,
         )
 
     @mcp.tool()
@@ -92,13 +103,25 @@ def register(mcp: Any) -> None:
         description: str | None = None,
         location: str | None = None,
         reminders: list[int] | None = None,
+        rrule: str | None = None,
     ) -> dict[str, Any]:
-        """Replace a CalDAV event or recurrence instance using ISO datetimes.
+        """Replace a CalDAV event, whole series, or recurrence instance.
 
         reminders: minutes before start for DISPLAY alarms, e.g. [15, 60].
         Omit (None) to keep existing reminders, pass [] to clear them, or a
         list to replace them. This differs from description/location, which
         are dropped when omitted.
+        rrule: None to preserve, "" to remove recurrence, or a raw RRULE to
+        replace the whole-series rule. Examples: every weekday
+        FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR; every 2 weeks Mon/Wed
+        FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE; last Friday monthly
+        FREQ=MONTHLY;BYDAY=-1FR; yearly FREQ=YEARLY.
+        recurrence_id and rrule are mutually exclusive. Presence of
+        recurrence_id updates one instance; absence updates the whole series.
+        Recurring timed events use the display timezone suffix, e.g.
+        2026-05-11T09:00:00-04:00 (America/New_York), or the configured
+        calendar timezone by default. All-day events use YYYY-MM-DD with
+        exclusive end dates.
         """
         return await caldav.update_event(
             caldav.CalDAVConfig.from_env(),
@@ -111,6 +134,7 @@ def register(mcp: Any) -> None:
             description=description,
             location=location,
             reminders=reminders,
+            rrule=rrule,
         )
 
     @mcp.tool()

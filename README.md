@@ -96,9 +96,9 @@ for mail operations.
 | `calendar_today` | Fetch events for the next 24 hours in the configured vault timezone. |
 | `calendar_week` | Fetch events for the next seven days in the configured vault timezone. |
 | `calendar_events_range` | Fetch events within a timezone-aware ISO datetime range. |
-| `calendar_create_event` | Create an event in a calendar slug from timezone-aware ISO start/end datetimes, with optional minutes-before reminders. |
+| `calendar_create_event` | Create a timed, all-day, or RRULE recurring event in a calendar slug, with optional minutes-before reminders. |
 | `calendar_import_ics` | Import a raw iCalendar object into a calendar slug while preserving scheduling properties. |
-| `calendar_update_event` | Replace an event, or one recurring instance when `recurrence_id` is supplied, from timezone-aware ISO datetimes; reminders are preserved unless overridden. |
+| `calendar_update_event` | Replace an event, a whole recurring series, or one recurring instance when `recurrence_id` is supplied; reminders are preserved unless overridden. |
 | `calendar_delete_event` | Delete an event, or one recurring instance when `recurrence_id` is supplied. |
 | `calendar_rsvp` | Update attendee status on an existing invitation while preserving CalDAV scheduling context. |
 
@@ -107,7 +107,8 @@ event's iCalendar `uid` and `calendar_slug`, plus `recurrence_id` for recurring
 instances, so listed events can be passed directly to the update/delete tools.
 Each event also includes a `reminders` field when it has alarms: a list of
 whole minutes before start (e.g. `[15, 60]`), with any non-standard alarm
-surfaced as its raw iCalendar trigger string.
+surfaced as its raw iCalendar trigger string. Recurring events include `rrule`
+when the source series has an RRULE.
 
 Calendar mutation tools use the `slug` returned by `calendar_list` as
 `calendar_slug`. `calendar_create_event` generates a UID when omitted and sends
@@ -118,6 +119,15 @@ iCalendar UID, which does not need to match the CalDAV resource filename. To
 mutate a single recurring instance instead of the whole series, pass both `uid`
 and that listed instance's `recurrence_id`; updates write an iCalendar override
 and deletes add an exception date.
+`calendar_create_event` and `calendar_update_event` accept raw RRULE strings
+such as `FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR`,
+`FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE`, `FREQ=MONTHLY;BYDAY=-1FR`, and
+`FREQ=YEARLY`. Recurring timed events can include a display timezone suffix
+such as `2026-05-11T09:00:00-04:00 (America/New_York)` to anchor the local
+pattern; without it, the configured CalDAV timezone is used. All-day events use
+`YYYY-MM-DD` start and end values, with the end date exclusive. On whole-series
+update, omitting `rrule` preserves the existing recurrence, `rrule=""` removes
+recurrence metadata, and a new RRULE string replaces the series rule.
 `calendar_import_ics` upserts a raw iCalendar object by UID and preserves invite
 scheduling fields such as `ORGANIZER`, `ATTENDEE`, and `VTIMEZONE`.
 `calendar_create_event` and `calendar_update_event` accept a `reminders` list

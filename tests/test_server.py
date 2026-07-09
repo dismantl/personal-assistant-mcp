@@ -176,6 +176,23 @@ async def test_default_tools_registered_without_legacy_email() -> None:
 
 
 @pytest.mark.asyncio
+async def test_calendar_create_and_update_tools_expose_rrule_contract() -> None:
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+
+    create_tool = tools["calendar_create_event"]
+    update_tool = tools["calendar_update_event"]
+    assert create_tool.description is not None
+    assert update_tool.description is not None
+
+    assert "rrule" in create_tool.inputSchema["properties"]
+    assert "rrule" in update_tool.inputSchema["properties"]
+    assert "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" in create_tool.description
+    assert "2026-05-11T09:00:00-04:00 (America/New_York)" in create_tool.description
+    assert 'None to preserve, "" to remove' in update_tool.description
+    assert "recurrence_id and rrule are mutually exclusive" in update_tool.description
+
+
+@pytest.mark.asyncio
 async def test_task_cache_smoke_via_mcp_call_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_vault = FakeVaultClient()
     fake_vault.frontmatters["TODO.md"] = _planner_spec_fm()
