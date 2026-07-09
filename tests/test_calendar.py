@@ -366,6 +366,38 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_RECURRING_OVERRIDE_EXDATE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/recurring-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:recurring-123
+SUMMARY:Daily standup
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RRULE:FREQ=DAILY;COUNT=5
+EXDATE:20260513T140000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:recurring-123
+RECURRENCE-ID:20260512T140000Z
+SUMMARY:Moved standup
+DTSTART:20260512T160000Z
+DTEND:20260512T170000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_RECURRING_OVERRIDE_WITH_ALARM_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
   <d:response>
@@ -466,6 +498,10 @@ END:VCALENDAR
 def _vevents_from_body(body: str) -> list[icalendar.Event]:
     calendar = icalendar.Calendar.from_ical(body)
     return [cast(icalendar.Event, component) for component in calendar.walk("VEVENT")]
+
+
+def _calendar_from_body(body: str) -> icalendar.Calendar:
+    return cast(icalendar.Calendar, icalendar.Calendar.from_ical(body))
 
 
 def _override_vevent(body: str, recurrence_id: str) -> icalendar.Event:
@@ -689,6 +725,47 @@ END:VCALENDAR
 
 
 @respx.mock
+async def test_fetch_events_surfaces_rrule_for_recurring_instances() -> None:
+    respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
+        return_value=httpx.Response(207, text=_PROPFIND_XML)
+    )
+    recurring_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:recurring-123
+SUMMARY:Daily standup
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RRULE:FREQ=DAILY;COUNT=2
+END:VEVENT
+BEGIN:VEVENT
+UID:single-123
+SUMMARY:One-off
+DTSTART:20260511T180000Z
+DTEND:20260511T190000Z
+END:VEVENT
+END:VCALENDAR
+"""
+    respx.get("https://cal.example/dav/personal?export").mock(
+        return_value=httpx.Response(200, text=recurring_ical)
+    )
+    respx.get("https://cal.example/dav/holidays?export").mock(
+        return_value=httpx.Response(200, text="BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+    )
+
+    events = await fetch_events(_CONFIG, "week", now=_FIXED_NOW)
+
+    standups = [event for event in events if event["uid"] == "recurring-123"]
+    assert [event["rrule"] for event in standups] == [
+        "FREQ=DAILY;COUNT=2",
+        "FREQ=DAILY;COUNT=2",
+    ]
+    one_off = next(event for event in events if event["uid"] == "single-123")
+    assert "rrule" not in one_off
+
+
+@respx.mock
 async def test_fetch_events_exposes_date_recurrence_id_for_all_day_instances() -> None:
     respx.route(method="PROPFIND", url="https://cal.example/dav/").mock(
         return_value=httpx.Response(207, text=_PROPFIND_XML)
@@ -872,6 +949,77 @@ async def test_create_event_serializes_offset_datetimes_as_utc() -> None:
 
 
 @respx.mock
+async def test_create_event_writes_timed_rrule_with_timezone_anchor() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    result = await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Workout",
+        start="2026-05-11T09:00:00-04:00 (America/New_York)",
+        end="2026-05-11T10:00:00-04:00 (America/New_York)",
+        rrule="FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=6",
+    )
+
+    assert result == {
+        "uid": "event-123",
+        "href": "https://cal.example/dav/personal/event-123.ics",
+        "created": True,
+        "timezone": "America/New_York",
+    }
+    body = route.calls.last.request.content.decode()
+    calendar = _calendar_from_body(body)
+    vevent = _vevents_from_body(body)[0]
+    assert vevent.get("DTSTART").dt.isoformat() == "2026-05-11T09:00:00-04:00"
+    assert str(vevent.get("DTSTART").dt.tzinfo) == "America/New_York"
+    assert vevent.get("DTEND").dt.isoformat() == "2026-05-11T10:00:00-04:00"
+    assert str(vevent.get("RRULE").get("FREQ")[0]) == "WEEKLY"
+    assert [str(day) for day in vevent.get("RRULE").get("BYDAY")] == ["MO", "WE", "FR"]
+    assert vevent.get("RRULE").get("COUNT") == [6]
+    assert list(calendar.walk("VTIMEZONE"))
+
+
+@respx.mock
+async def test_create_event_writes_all_day_rrule_without_timezone() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/event-123.ics").mock(
+        return_value=httpx.Response(201)
+    )
+
+    result = await create_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="event-123",
+        summary="Anniversary",
+        start="2026-05-11",
+        end="2026-05-12",
+        rrule="FREQ=YEARLY",
+    )
+
+    assert result == {
+        "uid": "event-123",
+        "href": "https://cal.example/dav/personal/event-123.ics",
+        "created": True,
+        "timezone": None,
+    }
+    body = route.calls.last.request.content.decode()
+    calendar = _calendar_from_body(body)
+    vevent = _vevents_from_body(body)[0]
+    assert vevent.get("DTSTART").dt == date(2026, 5, 11)
+    assert vevent.get("DTEND").dt == date(2026, 5, 12)
+    assert str(vevent.get("RRULE").get("FREQ")[0]) == "YEARLY"
+    assert not list(calendar.walk("VTIMEZONE"))
+
+
+@respx.mock
 async def test_create_event_writes_display_alarms() -> None:
     respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
         return_value=httpx.Response(207, text=_REPORT_EMPTY_XML)
@@ -939,6 +1087,42 @@ async def test_create_event_rejects_over_cap_reminder() -> None:
             start="2026-05-11T14:00:00+00:00",
             end="2026-05-11T15:00:00+00:00",
             reminders=[40321],
+        )
+
+
+async def test_create_event_rejects_malformed_rrule() -> None:
+    with pytest.raises(ValueError, match="valid RRULE"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            summary="Dentist",
+            start="2026-05-11T14:00:00+00:00",
+            end="2026-05-11T15:00:00+00:00",
+            rrule="FREQ=",
+        )
+
+
+async def test_create_event_rejects_rrule_count_with_until() -> None:
+    with pytest.raises(ValueError, match="COUNT and UNTIL"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            summary="Dentist",
+            start="2026-05-11T14:00:00+00:00",
+            end="2026-05-11T15:00:00+00:00",
+            rrule="FREQ=DAILY;COUNT=2;UNTIL=20260601T000000Z",
+        )
+
+
+async def test_create_event_rejects_all_day_end_before_start() -> None:
+    with pytest.raises(ValueError, match="end must be after start"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            summary="Anniversary",
+            start="2026-05-11",
+            end="2026-05-11",
+            rrule="FREQ=YEARLY",
         )
 
 
@@ -1100,6 +1284,121 @@ async def test_update_event_preserves_reminders_when_omitted() -> None:
 
     body = route.calls.last.request.content.decode()
     assert "TRIGGER:-PT15M" in body
+
+
+@respx.mock
+async def test_update_event_preserves_whole_recurring_series_metadata() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_OVERRIDE_EXDATE_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Daily standup moved",
+        start="2026-05-11T09:30:00-04:00 (America/New_York)",
+        end="2026-05-11T10:30:00-04:00 (America/New_York)",
+    )
+
+    assert result == {
+        "uid": "recurring-123",
+        "href": "https://cal.example/dav/personal/recurring-resource.ics",
+        "updated": True,
+        "timezone": "America/New_York",
+    }
+    events = _vevents_from_body(route.calls.last.request.content.decode())
+    assert len(events) == 2
+    master = next(event for event in events if event.get("RECURRENCE-ID") is None)
+    override = next(event for event in events if event.get("RECURRENCE-ID") is not None)
+    assert str(master.get("SUMMARY")) == "Daily standup moved"
+    assert master.get("DTSTART").dt.isoformat() == "2026-05-11T09:30:00-04:00"
+    assert str(master.get("RRULE").get("FREQ")[0]) == "DAILY"
+    assert master.get("RRULE").get("COUNT") == [5]
+    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc)
+    assert str(override.get("SUMMARY")) == "Moved standup"
+    assert override.get("RECURRENCE-ID").dt == datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc)
+
+
+@respx.mock
+async def test_update_event_replaces_whole_series_rrule() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_OVERRIDE_EXDATE_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="Daily standup moved",
+        start="2026-05-11T09:30:00-04:00 (America/New_York)",
+        end="2026-05-11T10:30:00-04:00 (America/New_York)",
+        rrule="FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4",
+    )
+
+    assert result["timezone"] == "America/New_York"
+    master = next(
+        event
+        for event in _vevents_from_body(route.calls.last.request.content.decode())
+        if event.get("RECURRENCE-ID") is None
+    )
+    assert str(master.get("RRULE").get("FREQ")[0]) == "WEEKLY"
+    assert [str(day) for day in master.get("RRULE").get("BYDAY")] == ["MO", "WE"]
+    assert master.get("RRULE").get("COUNT") == [4]
+    assert master.get("EXDATE").dts[0].dt == datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc)
+
+
+@respx.mock
+async def test_update_event_empty_rrule_collapses_whole_series() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_OVERRIDE_EXDATE_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/recurring-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="recurring-123",
+        summary="One standup",
+        start="2026-05-11T14:30:00+00:00",
+        end="2026-05-11T15:30:00+00:00",
+        rrule="",
+    )
+
+    assert result == {
+        "uid": "recurring-123",
+        "href": "https://cal.example/dav/personal/recurring-resource.ics",
+        "updated": True,
+    }
+    events = _vevents_from_body(route.calls.last.request.content.decode())
+    assert len(events) == 1
+    event = events[0]
+    assert str(event.get("SUMMARY")) == "One standup"
+    assert "RRULE" not in event
+    assert "EXDATE" not in event
+    assert event.get("DTSTART").dt == datetime(2026, 5, 11, 14, 30, tzinfo=timezone.utc)
+
+
+async def test_update_event_rejects_rrule_with_recurrence_id() -> None:
+    with pytest.raises(ValueError, match="rrule cannot be combined with recurrence_id"):
+        await update_event(
+            _CONFIG,
+            calendar_slug="personal",
+            uid="recurring-123",
+            recurrence_id="2026-05-12T14:00:00+00:00",
+            summary="Moved standup",
+            start="2026-05-12T16:00:00+00:00",
+            end="2026-05-12T17:00:00+00:00",
+            rrule="FREQ=DAILY;COUNT=2",
+        )
 
 
 @respx.mock

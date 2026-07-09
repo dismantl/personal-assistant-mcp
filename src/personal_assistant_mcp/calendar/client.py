@@ -30,6 +30,7 @@ import defusedxml.ElementTree as ET  # noqa: N817 - defused stdlib-compatible al
 import httpx
 import icalendar
 import recurring_ical_events
+from icalendar.prop import vRecur
 
 _DEFAULT_TZ = "America/New_York"
 _XML_NS = {
@@ -86,6 +87,20 @@ class CalDAVConfig:
 class _EventResource:
     href: str
     calendar_data: str
+
+
+@dataclass(frozen=True)
+class _EventTimeValues:
+    start: date | datetime
+    end: date | datetime
+    timezone_name: str | None
+
+
+@dataclass(frozen=True)
+class _SerializedEventUpdate:
+    body: bytes
+    include_timezone: bool
+    timezone_name: str | None
 
 
 def _required(name: str) -> str:
@@ -167,10 +182,68 @@ def _parse_iso_datetime(value: str, field_name: str) -> datetime:
     return parsed
 
 
+def _display_timezone_name(value: str) -> str | None:
+    match = _DISPLAY_TZ_SUFFIX.fullmatch(value)
+    return match["tz"] if match else None
+
+
 def _parse_recurrence_id(value: str) -> date | datetime:
     if _DATE_ONLY.fullmatch(value):
         return date.fromisoformat(value)
     return _parse_iso_datetime(value, "recurrence_id")
+
+
+def _validate_rrule_text(rrule: str) -> str:
+    clean_rrule = rrule.strip()
+    try:
+        parsed = vRecur.from_ical(clean_rrule)
+    except ValueError as exc:
+        raise ValueError("rrule must be a valid RRULE, e.g. FREQ=WEEKLY;COUNT=4") from exc
+    if "FREQ" not in parsed:
+        raise ValueError("rrule must be a valid RRULE, e.g. FREQ=WEEKLY;COUNT=4")
+    if "COUNT" in parsed and "UNTIL" in parsed:
+        raise ValueError("rrule must not contain both COUNT and UNTIL")
+    return clean_rrule
+
+
+def _event_time_values(
+    *,
+    config: CalDAVConfig,
+    start: str,
+    end: str,
+    rrule: str | None,
+) -> _EventTimeValues:
+    start_is_date = _DATE_ONLY.fullmatch(start) is not None
+    end_is_date = _DATE_ONLY.fullmatch(end) is not None
+    if start_is_date or end_is_date:
+        if not (start_is_date and end_is_date):
+            raise ValueError("start and end must both be all-day dates or both datetimes")
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+        if end_date <= start_date:
+            raise ValueError("end must be after start")
+        return _EventTimeValues(start=start_date, end=end_date, timezone_name=None)
+
+    dtstart = _parse_iso_datetime(start, "start")
+    dtend = _parse_iso_datetime(end, "end")
+    if rrule is None:
+        dtstart = dtstart.astimezone(timezone.utc)
+        dtend = dtend.astimezone(timezone.utc)
+        timezone_name = None
+    else:
+        timezone_name = _display_timezone_name(start) or _display_timezone_name(end)
+        if timezone_name is None:
+            timezone_name = config.timezone_name
+        try:
+            anchor_tz = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("calendar timezone is unknown") from exc
+        dtstart = dtstart.astimezone(anchor_tz)
+        dtend = dtend.astimezone(anchor_tz)
+
+    if dtend <= dtstart:
+        raise ValueError("end must be after start")
+    return _EventTimeValues(start=dtstart, end=dtend, timezone_name=timezone_name)
 
 
 def _validate_path_segment(value: str, field_name: str) -> str:
@@ -437,6 +510,7 @@ def _extract_alarms(component: icalendar.Event) -> list[icalendar.Alarm]:
 
 def _build_event_component(
     *,
+    config: CalDAVConfig,
     uid: str,
     summary: str,
     start: str,
@@ -445,25 +519,28 @@ def _build_event_component(
     description: str | None = None,
     location: str | None = None,
     alarms: list[icalendar.Alarm] | None = None,
+    rrule: str | None = None,
 ) -> icalendar.Event:
     safe_uid = _validate_uid_text(uid, "uid")
     clean_summary = summary.strip()
     if not clean_summary:
         raise ValueError("summary must not be empty")
+    if rrule is not None and recurrence_id is not None:
+        raise ValueError("rrule cannot be combined with recurrence_id")
 
-    dtstart = _parse_iso_datetime(start, "start").astimezone(timezone.utc)
-    dtend = _parse_iso_datetime(end, "end").astimezone(timezone.utc)
-    if dtend <= dtstart:
-        raise ValueError("end must be after start")
+    clean_rrule = _validate_rrule_text(rrule) if rrule is not None else None
+    times = _event_time_values(config=config, start=start, end=end, rrule=clean_rrule)
 
     event = icalendar.Event()
     event.add("uid", safe_uid)
     event.add("summary", clean_summary)
-    event.add("dtstart", dtstart)
-    event.add("dtend", dtend)
+    event.add("dtstart", times.start)
+    event.add("dtend", times.end)
     event.add("dtstamp", datetime.now(timezone.utc))
     if recurrence_id is not None:
         event.add("recurrence-id", recurrence_id)
+    if clean_rrule is not None:
+        event.add("rrule", clean_rrule)
     if description is not None:
         event.add("description", description)
     if location is not None:
@@ -475,6 +552,7 @@ def _build_event_component(
 
 def _build_event_ical(
     *,
+    config: CalDAVConfig,
     uid: str,
     summary: str,
     start: str,
@@ -482,12 +560,14 @@ def _build_event_ical(
     description: str | None = None,
     location: str | None = None,
     alarms: list[icalendar.Alarm] | None = None,
+    rrule: str | None = None,
 ) -> bytes:
     cal = icalendar.Calendar()
     cal.add("prodid", "-//personal-assistant-mcp//calendar//EN")
     cal.add("version", "2.0")
     cal.add_component(
         _build_event_component(
+            config=config,
             uid=uid,
             summary=summary,
             start=start,
@@ -495,8 +575,10 @@ def _build_event_ical(
             description=description,
             location=location,
             alarms=alarms,
+            rrule=rrule,
         )
     )
+    cal.add_missing_timezones()
     return cal.to_ical()
 
 
@@ -563,6 +645,7 @@ def _remove_recurrence_override(
 
 
 def _build_recurring_instance_update_ical(
+    config: CalDAVConfig,
     calendar_data: str,
     *,
     uid: str,
@@ -588,6 +671,7 @@ def _build_recurring_instance_update_ical(
     _remove_recurrence_override(calendar, uid, recurrence_id)
     calendar.add_component(
         _build_event_component(
+            config=config,
             uid=uid,
             recurrence_id=recurrence_id,
             summary=summary,
@@ -616,6 +700,104 @@ def _build_recurring_instance_delete_ical(
     if not has_exdate:
         master.add("exdate", recurrence_id)
     return calendar.to_ical()
+
+
+def _rrule_text(component: icalendar.Event) -> str | None:
+    rrule = component.get("RRULE")
+    return rrule.to_ical().decode("utf-8") if rrule is not None else None
+
+
+def _has_series_metadata(calendar: icalendar.Calendar, uid: str, master: icalendar.Event) -> bool:
+    if master.get("RRULE") is not None or master.get("EXDATE") is not None:
+        return True
+    return any(
+        str(component.get("UID", "")) == uid and component.get("RECURRENCE-ID") is not None
+        for component in _event_components(calendar)
+    )
+
+
+def _replace_component_value(component: icalendar.Event, prop_name: str, value: Any) -> None:
+    component.pop(prop_name, None)
+    component.add(prop_name.lower(), value)
+
+
+def _replace_component_alarms(
+    component: icalendar.Event, alarms: list[icalendar.Alarm] | None
+) -> None:
+    if alarms is None:
+        return
+    component.subcomponents = [
+        sub for sub in component.subcomponents if getattr(sub, "name", "") != "VALARM"
+    ]
+    for alarm in alarms:
+        component.add_component(alarm)
+
+
+def _build_whole_series_update_ical(
+    config: CalDAVConfig,
+    calendar: icalendar.Calendar,
+    *,
+    uid: str,
+    master: icalendar.Event,
+    summary: str,
+    start: str,
+    end: str,
+    description: str | None,
+    location: str | None,
+    reminders: list[int] | None,
+    rrule: str | None,
+) -> _SerializedEventUpdate:
+    clean_summary = summary.strip()
+    if not clean_summary:
+        raise ValueError("summary must not be empty")
+
+    existing_rrule = _rrule_text(master)
+    if rrule == "":
+        next_rrule = None
+    elif rrule is None:
+        next_rrule = existing_rrule
+    else:
+        next_rrule = _validate_rrule_text(rrule)
+
+    # Existing overrides remain keyed to their original recurrence IDs; callers
+    # that shift a series DTSTART may need to review those exceptions manually.
+    times = _event_time_values(config=config, start=start, end=end, rrule=next_rrule)
+    _replace_component_value(master, "SUMMARY", clean_summary)
+    _replace_component_value(master, "DTSTART", times.start)
+    _replace_component_value(master, "DTEND", times.end)
+    _replace_component_value(master, "DTSTAMP", datetime.now(timezone.utc))
+
+    master.pop("DESCRIPTION", None)
+    if description is not None:
+        master.add("description", description)
+    master.pop("LOCATION", None)
+    if location is not None:
+        master.add("location", location)
+
+    master.pop("RRULE", None)
+    if next_rrule is None:
+        master.pop("EXDATE", None)
+        master.pop("RDATE", None)
+        calendar.subcomponents = [
+            component
+            for component in calendar.subcomponents
+            if not (
+                _is_event_component(component)
+                and str(component.get("UID", "")) == uid
+                and component.get("RECURRENCE-ID") is not None
+            )
+        ]
+    else:
+        master.add("rrule", next_rrule)
+
+    alarms = _build_reminder_alarms(reminders, summary) if reminders is not None else None
+    _replace_component_alarms(master, alarms)
+    calendar.add_missing_timezones()
+    return _SerializedEventUpdate(
+        body=calendar.to_ical(),
+        include_timezone=next_rrule is not None,
+        timezone_name=times.timezone_name,
+    )
 
 
 async def list_calendars(
@@ -719,6 +901,12 @@ async def _fetch_events_between(
                 continue
 
             ical_cal = _parse_calendar(response.text)
+            rrules_by_uid = {
+                str(component.get("UID", "")): rrule
+                for component in _event_components(ical_cal)
+                if component.get("RECURRENCE-ID") is None
+                if (rrule := _rrule_text(component)) is not None
+            }
             expanded = recurring_ical_events.of(ical_cal).between(start, end)
             for event in expanded:
                 row: dict[str, Any] = {
@@ -733,6 +921,8 @@ async def _fetch_events_between(
                     row["end"] = _format_ical_value(dtend.dt)
                 if (recurrence_id := event.get("RECURRENCE-ID")) is not None:
                     row["recurrence_id"] = _format_ical_value(recurrence_id.dt)
+                if rrule := rrules_by_uid.get(row["uid"]):
+                    row["rrule"] = rrule
                 if (location := event.get("LOCATION")) is not None:
                     row["location"] = str(location)
                 if (description := event.get("DESCRIPTION")) is not None:
@@ -760,13 +950,23 @@ async def create_event(
     description: str | None = None,
     location: str | None = None,
     reminders: list[int] | None = None,
+    rrule: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Create a CalDAV event resource without overwriting an existing UID."""
     has_supplied_uid = uid is not None
     event_uid = _validate_uid_text(uid, "uid") if uid is not None else uuid.uuid4().hex
     resource_id = _resource_id_for_uid(event_uid)
+    event_timezone: str | None = None
+    if rrule is not None:
+        event_timezone = _event_time_values(
+            config=config,
+            start=start,
+            end=end,
+            rrule=_validate_rrule_text(rrule),
+        ).timezone_name
     body = _build_event_ical(
+        config=config,
         uid=event_uid,
         summary=summary,
         start=start,
@@ -774,6 +974,7 @@ async def create_event(
         description=description,
         location=location,
         alarms=_build_reminder_alarms(reminders or [], summary),
+        rrule=rrule,
     )
 
     own_client = http_client is None
@@ -804,7 +1005,10 @@ async def create_event(
         if own_client:
             await client.aclose()
 
-    return {"uid": event_uid, "href": href, "created": True}
+    result: dict[str, Any] = {"uid": event_uid, "href": href, "created": True}
+    if rrule is not None:
+        result["timezone"] = event_timezone
+    return result
 
 
 async def import_ics(
@@ -871,9 +1075,12 @@ async def update_event(
     description: str | None = None,
     location: str | None = None,
     reminders: list[int] | None = None,
+    rrule: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Replace a CalDAV event resource or one recurrence instance by UID."""
+    if rrule is not None and recurrence_id is not None:
+        raise ValueError("rrule cannot be combined with recurrence_id")
     event_uid = _validate_uid_text(uid, "uid")
     parsed_recurrence_id = (
         _parse_recurrence_id(recurrence_id) if recurrence_id is not None else None
@@ -881,6 +1088,7 @@ async def update_event(
     recurrence_text = (
         _format_ical_value(parsed_recurrence_id) if parsed_recurrence_id is not None else None
     )
+    update_timezone: tuple[bool, str | None] = (False, None)
 
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=30.0)
@@ -893,22 +1101,54 @@ async def update_event(
 
         body: bytes | None
         if parsed_recurrence_id is None:
-            if reminders is not None:
-                alarms = _build_reminder_alarms(reminders, summary)
+            calendar = _parse_calendar(resource.calendar_data)
+            master = _find_master_event(calendar, event_uid)
+            if master is not None and _has_series_metadata(calendar, event_uid, master):
+                serialized = _build_whole_series_update_ical(
+                    config,
+                    calendar,
+                    uid=event_uid,
+                    master=master,
+                    summary=summary,
+                    start=start,
+                    end=end,
+                    description=description,
+                    location=location,
+                    reminders=reminders,
+                    rrule=rrule,
+                )
+                body = serialized.body
+                update_timezone = (serialized.include_timezone, serialized.timezone_name)
             else:
-                master = _find_master_event(_parse_calendar(resource.calendar_data), event_uid)
-                alarms = _extract_alarms(master) if master is not None else []
-            body = _build_event_ical(
-                uid=event_uid,
-                summary=summary,
-                start=start,
-                end=end,
-                description=description,
-                location=location,
-                alarms=alarms,
-            )
+                if reminders is not None:
+                    alarms = _build_reminder_alarms(reminders, summary)
+                else:
+                    alarms = _extract_alarms(master) if master is not None else []
+                next_rrule = rrule if rrule not in (None, "") else None
+                body = _build_event_ical(
+                    config=config,
+                    uid=event_uid,
+                    summary=summary,
+                    start=start,
+                    end=end,
+                    description=description,
+                    location=location,
+                    alarms=alarms,
+                    rrule=next_rrule,
+                )
+                if next_rrule is not None:
+                    update_timezone = (
+                        True,
+                        _event_time_values(
+                            config=config,
+                            start=start,
+                            end=end,
+                            rrule=_validate_rrule_text(next_rrule),
+                        ).timezone_name,
+                    )
         else:
             body = _build_recurring_instance_update_ical(
+                config,
                 resource.calendar_data,
                 uid=event_uid,
                 recurrence_id=parsed_recurrence_id,
@@ -943,6 +1183,9 @@ async def update_event(
     result: dict[str, Any] = {"uid": event_uid, "href": resource.href, "updated": True}
     if recurrence_text is not None:
         result["recurrence_id"] = recurrence_text
+    include_timezone, timezone_name = update_timezone
+    if include_timezone:
+        result["timezone"] = timezone_name
     return result
 
 
