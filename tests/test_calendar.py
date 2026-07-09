@@ -399,6 +399,37 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_RECURRING_OVERRIDE_RANGE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/range-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:range-recurring-123
+SUMMARY:Daily standup
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RRULE:FREQ=DAILY;COUNT=5
+END:VEVENT
+BEGIN:VEVENT
+UID:range-recurring-123
+RECURRENCE-ID;RANGE=THISANDFUTURE:20260512T140000Z
+SUMMARY:Moved standup
+DTSTART:20260512T160000Z
+DTEND:20260512T170000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_RDATE_RECURRING_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
   <d:response>
@@ -1426,6 +1457,35 @@ async def test_update_event_rekeys_exceptions_when_series_start_moves() -> None:
     assert datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc) not in expanded_starts
     assert datetime(2026, 5, 12, 16, 0, tzinfo=timezone.utc) in expanded_starts
     assert expanded_starts.count(datetime(2026, 5, 12, 16, 0, tzinfo=timezone.utc)) == 1
+
+
+@respx.mock
+async def test_update_event_preserves_recurrence_id_params_when_start_moves() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RECURRING_OVERRIDE_RANGE_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/range-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="range-recurring-123",
+        summary="Daily standup moved",
+        start="2026-05-11T09:30:00-04:00 (America/New_York)",
+        end="2026-05-11T10:30:00-04:00 (America/New_York)",
+    )
+
+    body = route.calls.last.request.content.decode()
+    override = next(
+        event for event in _vevents_from_body(body) if event.get("RECURRENCE-ID") is not None
+    )
+    recurrence_id = override.get("RECURRENCE-ID")
+
+    assert recurrence_id.dt == datetime(2026, 5, 12, 13, 30, tzinfo=timezone.utc)
+    assert str(recurrence_id.params["RANGE"]) == "THISANDFUTURE"
+    assert "RECURRENCE-ID;RANGE=THISANDFUTURE:20260512T133000Z" in body
 
 
 @respx.mock

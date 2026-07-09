@@ -690,11 +690,7 @@ def _shift_recurring_exception_metadata(
     for component in overrides:
         recurrence_id = component.get("RECURRENCE-ID")
         if recurrence_id is not None:
-            _replace_component_value(
-                component,
-                "RECURRENCE-ID",
-                _shift_temporal_value(recurrence_id.dt, delta),
-            )
+            recurrence_id.dt = _shift_temporal_value(recurrence_id.dt, delta)
 
 
 def _recurrence_id_matches(component: icalendar.Event, recurrence_id: date | datetime) -> bool:
