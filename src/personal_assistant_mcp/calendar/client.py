@@ -203,6 +203,9 @@ def _validate_rrule_text(rrule: str) -> str:
         raise ValueError("rrule must be a valid RRULE, e.g. FREQ=WEEKLY;COUNT=4")
     if "COUNT" in parsed and "UNTIL" in parsed:
         raise ValueError("rrule must not contain both COUNT and UNTIL")
+    for prop_name in ("COUNT", "INTERVAL"):
+        if any(int(value) <= 0 for value in parsed.get(prop_name, [])):
+            raise ValueError("rrule COUNT and INTERVAL must be positive integers")
     return clean_rrule
 
 
@@ -708,7 +711,7 @@ def _rrule_text(component: icalendar.Event) -> str | None:
 
 
 def _has_series_metadata(calendar: icalendar.Calendar, uid: str, master: icalendar.Event) -> bool:
-    if master.get("RRULE") is not None or master.get("EXDATE") is not None:
+    if any(master.get(prop_name) is not None for prop_name in ("RRULE", "EXDATE", "RDATE")):
         return True
     return any(
         str(component.get("UID", "")) == uid and component.get("RECURRENCE-ID") is not None
@@ -758,6 +761,7 @@ def _build_whole_series_update_ical(
         next_rrule = existing_rrule
     else:
         next_rrule = _validate_rrule_text(rrule)
+    collapse_recurrence = rrule == ""
 
     # Existing overrides remain keyed to their original recurrence IDs; callers
     # that shift a series DTSTART may need to review those exceptions manually.
@@ -775,7 +779,9 @@ def _build_whole_series_update_ical(
         master.add("location", location)
 
     master.pop("RRULE", None)
-    if next_rrule is None:
+    if next_rrule is not None:
+        master.add("rrule", next_rrule)
+    if collapse_recurrence:
         master.pop("EXDATE", None)
         master.pop("RDATE", None)
         calendar.subcomponents = [
@@ -787,8 +793,6 @@ def _build_whole_series_update_ical(
                 and component.get("RECURRENCE-ID") is not None
             )
         ]
-    else:
-        master.add("rrule", next_rrule)
 
     alarms = _build_reminder_alarms(reminders, summary) if reminders is not None else None
     _replace_component_alarms(master, alarms)

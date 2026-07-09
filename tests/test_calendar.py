@@ -398,6 +398,30 @@ END:VCALENDAR
 </d:multistatus>
 """
 
+_REPORT_RDATE_RECURRING_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/personal/rdate-resource.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//
+BEGIN:VEVENT
+UID:rdate-123
+SUMMARY:Extra standup
+DTSTART:20260511T140000Z
+DTEND:20260511T150000Z
+RDATE:20260518T140000Z
+END:VEVENT
+END:VCALENDAR
+]]></cal:calendar-data>
+      </d:prop>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
 _REPORT_RECURRING_OVERRIDE_WITH_ALARM_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
   <d:response>
@@ -1114,6 +1138,25 @@ async def test_create_event_rejects_rrule_count_with_until() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "rrule",
+    [
+        "FREQ=DAILY;INTERVAL=0",
+        "FREQ=DAILY;COUNT=0",
+    ],
+)
+async def test_create_event_rejects_non_positive_rrule_limits(rrule: str) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        await create_event(
+            _CONFIG,
+            calendar_slug="personal",
+            summary="Dentist",
+            start="2026-05-11T14:00:00+00:00",
+            end="2026-05-11T15:00:00+00:00",
+            rrule=rrule,
+        )
+
+
 async def test_create_event_rejects_all_day_end_before_start() -> None:
     with pytest.raises(ValueError, match="end must be after start"):
         await create_event(
@@ -1385,6 +1428,37 @@ async def test_update_event_empty_rrule_collapses_whole_series() -> None:
     assert "RRULE" not in event
     assert "EXDATE" not in event
     assert event.get("DTSTART").dt == datetime(2026, 5, 11, 14, 30, tzinfo=timezone.utc)
+
+
+@respx.mock
+async def test_update_event_preserves_rdate_series_when_rrule_omitted() -> None:
+    respx.route(method="REPORT", url="https://cal.example/dav/personal/").mock(
+        return_value=httpx.Response(207, text=_REPORT_RDATE_RECURRING_XML)
+    )
+    route = respx.put("https://cal.example/dav/personal/rdate-resource.ics").mock(
+        return_value=httpx.Response(204)
+    )
+
+    result = await update_event(
+        _CONFIG,
+        calendar_slug="personal",
+        uid="rdate-123",
+        summary="Extra standup moved",
+        start="2026-05-11T14:30:00+00:00",
+        end="2026-05-11T15:30:00+00:00",
+    )
+
+    assert result == {
+        "uid": "rdate-123",
+        "href": "https://cal.example/dav/personal/rdate-resource.ics",
+        "updated": True,
+    }
+    events = _vevents_from_body(route.calls.last.request.content.decode())
+    assert len(events) == 1
+    event = events[0]
+    assert str(event.get("SUMMARY")) == "Extra standup moved"
+    assert event.get("DTSTART").dt == datetime(2026, 5, 11, 14, 30, tzinfo=timezone.utc)
+    assert event.get("RDATE").dts[0].dt == datetime(2026, 5, 18, 14, 0, tzinfo=timezone.utc)
 
 
 async def test_update_event_rejects_rrule_with_recurrence_id() -> None:
